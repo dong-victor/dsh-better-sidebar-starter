@@ -125,10 +125,18 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
   /** Start a config. */
   const handleStart = useCallback(async (configId: string): Promise<void> => {
     try {
+      // Read global env paths from plugin settings.
+      const blob = store.getPrefs()?.pluginSettings?.['dsh-better-sidebar-starter:services'] ?? {}
+      const globalEnv: Record<string, string> = {}
+      if (typeof blob.javaHome === 'string' && blob.javaHome.trim() !== '') globalEnv.JAVA_HOME = blob.javaHome.trim()
+      if (typeof blob.nodePath === 'string' && blob.nodePath.trim() !== '') globalEnv.NODE_PATH = blob.nodePath.trim()
+      if (typeof blob.pythonPath === 'string' && blob.pythonPath.trim() !== '') globalEnv.PYTHON_PATH = blob.pythonPath.trim()
+      if (typeof blob.mvnPath === 'string' && blob.mvnPath.trim() !== '') globalEnv.MVN_PATH = blob.mvnPath.trim()
+
       const resp = await fetch(`${API_BASE}/run?${sessionQuery()}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ configId }),
+        body: JSON.stringify({ configId, globalEnv }),
       })
       if (resp.ok) {
         const data = await resp.json() as { instance: RunInstance }
@@ -138,7 +146,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
         void fetchConfigs() // lastRunAt update
       }
     } catch { /* ignore */ }
-  }, [sessionQuery, fetchInstances, fetchConfigs])
+  }, [sessionQuery, fetchInstances, fetchConfigs, store])
 
   /** Stop an instance. */
   const handleStop = useCallback(async (instanceId: string): Promise<void> => {
@@ -179,6 +187,9 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
       command: config.command,
       cwd: config.cwd,
       env: config.env,
+      jvmArgs: config.jvmArgs,
+      args: config.args,
+      runtime: config.runtime,
     })
     setShowModal(true)
   }
@@ -329,6 +340,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
     showModal
       ? createElement(ConfigEditorModal, {
           config: editingConfig,
+          scope: { sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '', cwd: scope.cwd },
           onSave: (c) => { void handleSaveConfig(c) },
           onCancel: () => { setShowModal(false); setEditingConfig(null) },
         })

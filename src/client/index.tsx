@@ -11,6 +11,7 @@ import type { Context } from 'cordis'
 // Triggers the ctx.betterSidebar type augmentation (erased at build).
 import type {} from 'dsh-better-sidebar'
 import { ServicesTab } from './ServicesTab.tsx'
+import { SettingsPanel } from './SettingsPanel.tsx'
 import { RocketIcon } from './icons.tsx'
 
 /** Services required before mounting: the betterSidebar registry (provided
@@ -31,7 +32,11 @@ export function apply(ctx: Context): void {
         pluginToggles: [
           { key: 'autoSelectOnStart', type: 'switch', title: '启动后自动选中日志' },
           { key: 'autoScroll', type: 'switch', title: '自动滚动到最新日志' },
+          { key: 'javaHome', type: 'text', title: 'Java 主目录 (JAVA_HOME)', desc: 'Spring Boot 用的 JDK 路径，留空则自动查找' },
+          { key: 'nodePath', type: 'text', title: 'Node.js 路径', desc: 'npm 命令用的 Node 路径，留空则用系统默认' },
+          { key: 'pythonPath', type: 'text', title: 'Python 路径', desc: 'Python 命令用的解释器路径，留空则用系统默认' },
         ],
+        render: (props): ReactNode => createElement(SettingsPanel, props),
       },
       component: (props): ReactNode => createElement(ServicesTab, props),
     }),

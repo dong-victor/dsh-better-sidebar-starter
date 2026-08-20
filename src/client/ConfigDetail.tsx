@@ -54,6 +54,20 @@ export function ConfigDetail({ config, onStart, onEdit, onDelete }: ConfigDetail
         createElement('div', { className: 'sts-detail-label' }, '工作目录'),
         createElement('div', { className: 'sts-detail-value' }, config.cwd),
       ),
+      // JVM args (springboot only)
+      config.type === 'springboot' && config.jvmArgs
+        ? createElement('div', { className: 'sts-detail-row' },
+            createElement('div', { className: 'sts-detail-label' }, 'JVM参数'),
+            createElement('div', { className: 'sts-detail-value' }, config.jvmArgs),
+          )
+        : null,
+      // Program args
+      config.args
+        ? createElement('div', { className: 'sts-detail-row' },
+            createElement('div', { className: 'sts-detail-label' }, '程序实参'),
+            createElement('div', { className: 'sts-detail-value' }, config.args),
+          )
+        : null,
       // Env
       envEntries.length > 0
         ? createElement('div', { className: 'sts-detail-row' },

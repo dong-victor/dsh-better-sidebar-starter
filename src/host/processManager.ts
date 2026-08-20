@@ -8,8 +8,264 @@
 
 import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { WebSocket, type WebSocket as WsType } from 'ws'
 import type { RunConfig, RunConfigType } from './configStore.ts'
+
+/**
+ * Resolve JAVA_HOME from the system when it is not already in the process
+ * environment. Checks (in order):
+ * 1. process.env.JAVA_HOME
+ * 2. Windows registry (HKLM\SOFTWARE\JavaSoft\JDK / JRE)
+ * 3. Common install paths
+ * 4. `which java` → parent dir (Unix)
+ * Returns null if not found.
+ */
+function resolveJavaHome(): string | null {
+  // 1. Already in env — but verify the path is valid (has bin/java or bin/java.exe).
+  if (process.env.JAVA_HOME && process.env.JAVA_HOME.trim() !== '') {
+    const home = process.env.JAVA_HOME.trim()
+    const javaBin = existsSync(join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java'))
+    if (javaBin) return home
+    // JAVA_HOME is set but invalid — fall through to discovery.
+  }
+
+  if (process.platform === 'win32') {
+    // 2. Windows registry: check JDK then JRE keys (both 64-bit and 32-bit).
+    const regPaths = [
+      'HKLM\\SOFTWARE\\JavaSoft\\JDK',
+      'HKLM\\SOFTWARE\\JavaSoft\\Java Development Kit',
+      'HKLM\\SOFTWARE\\JavaSoft\\JRE',
+      'HKLM\\SOFTWARE\\WOW6432Node\\JavaSoft\\JDK',
+      'HKLM\\SOFTWARE\\WOW6432Node\\JavaSoft\\Java Development Kit',
+      'HKLM\\SOFTWARE\\WOW6432Node\\JavaSoft\\JRE',
+    ]
+    for (const regPath of regPaths) {
+      try {
+        // reg query returns "JavaHome    REG_SZ    C:\Program Files\Java\jdk-17"
+        const output = execFileSync('reg', ['query', regPath, '/s', '/v', 'JavaHome'], {
+          encoding: 'utf8',
+          timeout: 3000,
+          windowsHide: true,
+        })
+        const match = output.match(/JavaHome\s+REG_SZ\s+(.+)/)
+        if (match !== null) {
+          const home = match[1].trim()
+          if (existsSync(home)) return home
+        }
+      } catch { /* registry key not found — try next */ }
+    }
+
+    // 3. Common Windows install paths.
+    const userHome = process.env.USERPROFILE ?? ''
+    const candidates = [
+      join(process.env.PROGRAMFILES ?? 'C:\\Program Files', 'Java'),
+      join(process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)', 'Java'),
+      // IntelliJ-managed JDKs
+      join(userHome, '.jdks'),
+      // Android Studio / IntelliJ bundled JBR
+      join(userHome, '.jdks', 'jbr-21.0.11'),
+    ]
+    for (const base of candidates) {
+      try {
+        if (!existsSync(base)) continue
+        const dirs = execFileSync('cmd', ['/c', 'dir', '/b', '/ad', base], {
+          encoding: 'utf8',
+          timeout: 3000,
+          windowsHide: true,
+        }).split('\n').map((s) => s.trim()).filter((s) => s !== '')
+        // Check each dir for bin/java.exe, pick the highest-version JDK.
+        let best: string | null = null
+        let bestVer = -1
+        for (const d of dirs) {
+          const home = join(base, d)
+          if (!existsSync(join(home, 'bin', 'java.exe'))) continue
+          // Extract version number from dir name (e.g. corretto-17.0.19 → 17).
+          const verMatch = d.match(/(\d+)(?:\.|$)/)
+          const ver = verMatch !== null ? parseInt(verMatch[1], 10) : 0
+          // Prefer real JDKs (corretto/temurin/jdk) over JBR (runtime only).
+          const isRealJdk = /jdk|corretto|temurin/i.test(d)
+          const score = ver + (isRealJdk ? 1000 : 0)
+          if (score > bestVer) {
+            bestVer = score
+            best = home
+          }
+        }
+        if (best !== null) return best
+      } catch { /* dir failed — try next */ }
+    }
+  } else {
+    // Unix: try `readlink -f $(which java)` → strip /bin/java.
+    try {
+      const javaPath = execFileSync('which', ['java'], { encoding: 'utf8', timeout: 3000 }).trim()
+      if (javaPath !== '') {
+        const realPath = execFileSync('readlink', ['-f', javaPath], { encoding: 'utf8', timeout: 3000 }).trim()
+        // /usr/lib/jvm/.../bin/java → /usr/lib/jvm/...
+        const home = realPath.replace(/\/bin\/java$/, '')
+        if (home !== realPath && existsSync(home)) return home
+      }
+    } catch { /* not found */ }
+  }
+
+  return null
+}
+
+/** Resolve the Maven bin dir. Priority: config.runtime.mvn > a configured
+ *  MVN_PATH > process.env.MAVEN_HOME > `where mvn` / `which mvn`. */
+function resolveMavenBin(configRuntime: RunConfig['runtime'] | undefined, globalEnv: Record<string, string>): string | null {
+  // 1. config runtime override (dir or path to mvn).
+  const rtMvn = configRuntime?.mvn?.trim()
+  if (rtMvn) {
+    // Accept either a dir (…/bin or …/maven) or a path to mvn[.cmd].
+    if (existsSync(rtMvn)) {
+      const base = /mvn(\.cmd|\.bat)?$/i.test(rtMvn) ? rtMvn.replace(/[/\\]mvn(\.cmd|\.bat)?$/i, '') : rtMvn
+      const binDir = /[/\\]bin$/i.test(base) ? base : join(base, 'bin')
+      const exe = process.platform === 'win32' ? 'mvn.cmd' : 'mvn'
+      if (existsSync(join(binDir, exe))) return binDir
+    }
+  }
+  // 2. Global MVN_PATH.
+  const gMvn = globalEnv.MVN_PATH?.trim()
+  if (gMvn) {
+    const binDir = /[/\\]bin$/i.test(gMvn) ? gMvn : join(gMvn, 'bin')
+    const exe = process.platform === 'win32' ? 'mvn.cmd' : 'mvn'
+    if (existsSync(join(binDir, exe))) return binDir
+  }
+  // 3. MAVEN_HOME env.
+  const mh = process.env.MAVEN_HOME?.trim()
+  if (mh) {
+    const binDir = /[/\\]bin$/i.test(mh) ? mh : join(mh, 'bin')
+    const exe = process.platform === 'win32' ? 'mvn.cmd' : 'mvn'
+    if (existsSync(join(binDir, exe))) return binDir
+  }
+  // 4. which mvn.
+  try {
+    const which = process.platform === 'win32' ? 'where' : 'which'
+    const arg = process.platform === 'win32' ? 'mvn.cmd' : 'mvn'
+    const out = execFileSync(which, [arg], { encoding: 'utf8', timeout: 3000, windowsHide: true })
+      .split('\n')[0]?.trim()
+    if (out) {
+      const lastSep = Math.max(out.lastIndexOf('/'), out.lastIndexOf('\\'))
+      return lastSep >= 0 ? out.substring(0, lastSep) : out
+    }
+  } catch { /* not found */ }
+  return null
+}
+
+/** Resolve a tool path from config runtime, global env, process env, or PATH. */
+function resolveToolPath(
+  configRuntime: RunConfig['runtime'] | undefined,
+  globalEnv: Record<string, string>,
+  key: 'java' | 'node' | 'python',
+  envVar: string,
+  whichName: string,
+): string | null {
+  // 1. config runtime override.
+  const rt = configRuntime?.[key]?.trim()
+  if (rt && existsSync(rt)) {
+    const bin = existsSync(join(rt, 'bin')) && (key === 'java' || key === 'node')
+      ? join(rt, 'bin')
+      : /[/\\]bin$/i.test(rt) ? rt : join(rt, 'bin')
+    return /[/\\]bin$/i.test(rt) ? rt : rt
+  }
+  // 2. global env.
+  const gEnv = globalEnv[envVar]?.trim()
+  if (gEnv && existsSync(gEnv)) return gEnv
+  // 3. process env.
+  const pEnv = process.env[envVar]?.trim()
+  if (pEnv && existsSync(pEnv)) return pEnv
+  return null
+}
+
+/** Build the spawn env. Priority: config.runtime > globalEnv > process.env >
+ *  auto-detect. Injects tool bin dirs into PATH (fixes missing mvn/node/etc). */
+function buildEnv(config: RunConfig, globalEnv: Record<string, string>): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...globalEnv, ...config.env }
+  const isWin = process.platform === 'win32'
+  const sep = isWin ? ';' : ':'
+  const toolBins: string[] = []
+
+  // ---- Java (JAVA_HOME) ----
+  const javaHome = config.runtime?.java?.trim()
+    || globalEnv.JAVA_HOME?.trim()
+    || (process.env.JAVA_HOME?.trim() && existsSync(join(process.env.JAVA_HOME, 'bin', isWin ? 'java.exe' : 'java')) ? process.env.JAVA_HOME.trim() : '')
+  let resolvedJava = javaHome && existsSync(join(javaHome, 'bin', isWin ? 'java.exe' : 'java')) ? javaHome : ''
+  if (!resolvedJava) resolvedJava = resolveJavaHome() ?? ''
+  if (resolvedJava) {
+    env.JAVA_HOME = resolvedJava
+    toolBins.push(join(resolvedJava, 'bin'))
+  }
+
+  // ---- Node ----
+  const nodeHome = config.runtime?.node?.trim()
+    || globalEnv.NODE_PATH?.trim()
+    || (process.env.NODE_PATH?.trim() || '')
+  let resolvedNode = ''
+  if (nodeHome) {
+    const binDir = /[/\\]bin$/i.test(nodeHome) ? nodeHome : join(nodeHome, 'bin')
+    const nodeExe = isWin ? 'node.exe' : 'node'
+    if (existsSync(join(binDir, nodeExe))) {
+      resolvedNode = binDir
+    } else if (existsSync(join(nodeHome, nodeExe))) {
+      resolvedNode = nodeHome
+    }
+  }
+  if (resolvedNode) {
+    env.NODE_PATH = resolvedNode.replace(/[/\\]bin$/, '')
+    toolBins.push(resolvedNode)
+  }
+
+  // ---- Python ----
+  const pythonHome = config.runtime?.python?.trim()
+    || globalEnv.PYTHON_PATH?.trim()
+    || (process.env.PYTHON_PATH?.trim() || '')
+  let resolvedPython = ''
+  if (pythonHome) {
+    const binDir = /[/\\]bin$/i.test(pythonHome) ? pythonHome : join(pythonHome, 'bin')
+    const pyNames = isWin ? ['python.exe'] : ['python', 'python3']
+    const hasPy = pyNames.some((n) => existsSync(join(binDir, n)))
+    const hasPyRoot = pyNames.some((n) => existsSync(join(pythonHome, n)))
+    if (hasPy) resolvedPython = binDir
+    else if (hasPyRoot) resolvedPython = pythonHome
+  }
+  if (resolvedPython) {
+    env.PYTHON_PATH = resolvedPython.replace(/[/\\]bin$/, '')
+    toolBins.push(resolvedPython)
+  }
+
+  // ---- Maven (mvn) ----
+  const mvnBin = resolveMavenBin(config.runtime, globalEnv)
+  if (mvnBin) {
+    env.MAVEN_HOME = mvnBin.replace(/[/\\]bin$/, '')
+    toolBins.push(mvnBin)
+  }
+
+  // ---- Ensure the Windows system directories are on PATH ----
+  // The dsh web host process may start with a trimmed PATH that lacks
+  // System32 (so chcp/where/find etc. are not resolvable). Explicitly add
+  // the standard system dirs so spawned commands can find system tools.
+  if (isWin) {
+    const windir = process.env.WINDIR ?? process.env.SystemRoot ?? 'C:\\Windows'
+    const sys32 = process.env.SystemRoot
+      ? join(process.env.SystemRoot, 'System32')
+      : 'C:\\Windows\\System32'
+    const sysNative = process.env.SystemRoot
+      ? join(process.env.SystemRoot, 'SysWOW64')
+      : 'C:\\Windows\\SysWOW64'
+    for (const d of [windir, sys32, sysNative]) {
+      if (d && !toolBins.includes(d)) toolBins.push(d)
+    }
+  }
+
+  // Prepend all tool bin dirs to PATH so mvn/node/python/system resolve.
+  if (toolBins.length > 0) {
+    const existing = env.PATH ?? ''
+    env.PATH = [...toolBins, existing].filter(Boolean).join(sep)
+  }
+
+  return env
+}
 
 /** One running or recently-finished process instance. */
 export interface RunInstance {
@@ -58,15 +314,46 @@ export class ProcessManager {
   private readonly processes = new Map<string, ManagedProcess>()
 
   /** Spawn a config as a child process. Returns the new RunInstance. */
-  spawnConfig(config: RunConfig, resolvedCwd: string): RunInstance {
+  spawnConfig(config: RunConfig, resolvedCwd: string, globalEnv: Record<string, string> = {}): RunInstance {
     const id = randomUUID()
     const now = Date.now()
+
+    // Build the final command.
+    let finalCommand = config.command
+    if (config.type === 'springboot') {
+      // For Spring Boot, JVM args and program args must be passed to the Maven
+      // Spring Boot plugin as -D properties, NOT appended after the goal — Maven
+      // would otherwise treat them as lifecycle phases (e.g. `mx512M`).
+      //   JVM:       -Dspring-boot.run.jvmArguments="..."
+      //   Arguments: -Dspring-boot.run.arguments="..."
+      const parts: string[] = [config.command]
+      const jvm = config.jvmArgs?.trim() ?? ''
+      const appArgs = config.args?.trim() ?? ''
+      // Only inject via the plugin property if the command actually runs the
+      // spring-boot goal; otherwise append raw (custom command).
+      const isSpringBootGoal = /spring-boot\s*:/i.test(config.command) || /^mvn\w*\s+spring-boot/i.test(config.command)
+      if (isSpringBootGoal) {
+        if (jvm !== '') {
+          parts.push(`-Dspring-boot.run.jvmArguments="${jvm}"`)
+        }
+        if (appArgs !== '') {
+          parts.push(`-Dspring-boot.run.arguments="${appArgs}"`)
+        }
+      } else {
+        if (jvm !== '') parts.push(jvm)
+        if (appArgs !== '') parts.push(appArgs)
+      }
+      finalCommand = parts.join(' ')
+    } else if (config.args && config.args.trim()) {
+      finalCommand = `${config.command} ${config.args.trim()}`
+    }
+
     const instance: RunInstance = {
       id,
       configId: config.id,
       configName: config.name,
       configType: config.type,
-      command: config.command,
+      command: finalCommand,
       cwd: resolvedCwd,
       status: 'running',
       pid: 0,
@@ -86,9 +373,15 @@ export class ProcessManager {
 
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(config.command, {
+      // On Windows, pipes default to the console code page (often GBK/936),
+      // which garbles UTF-8 -> UTF-8 decoding in this host. Prefix `chcp 65001`
+      // so the spawned command emits UTF-8 bytes that match our utf8 decoding.
+      const cmd = process.platform === 'win32' && !/^chcp\s/i.test(finalCommand)
+        ? `chcp 65001 >nul && ${finalCommand}`
+        : finalCommand
+      child = spawn(cmd, {
         cwd: resolvedCwd,
-        env: { ...process.env, ...config.env },
+        env: buildEnv(config, globalEnv),
         shell: true,
         detached: process.platform !== 'win32',
         windowsHide: false,

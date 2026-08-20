@@ -13,6 +13,15 @@ import { randomUUID } from 'node:crypto'
 /** Supported configuration types. */
 export type RunConfigType = 'npm' | 'springboot' | 'python' | 'custom'
 
+/** Per-config runtime overrides: optional tool paths that override the global
+ *  settings for this specific run config. Empty string means "use global". */
+export interface RunRuntime {
+  java?: string
+  node?: string
+  python?: string
+  mvn?: string
+}
+
 /** One persisted run configuration. */
 export interface RunConfig {
   id: string
@@ -22,6 +31,12 @@ export interface RunConfig {
   /** Relative to session cwd; defaults to '.'. */
   cwd: string
   env: Record<string, string>
+  /** JVM arguments (springboot only, e.g. "-Xmx512m -Dspring.profiles.active=dev"). */
+  jvmArgs?: string
+  /** Program arguments (appended after command, e.g. "--server.port=8080"). */
+  args?: string
+  /** Per-config runtime tool overrides (Java/Node/Python/Maven). */
+  runtime?: RunRuntime
   createdAt: number
   updatedAt: number
   lastRunAt: number | null
@@ -62,6 +77,9 @@ export async function readConfigs(cwd: string): Promise<RunConfig[]> {
       && typeof c.command === 'string'
       && typeof c.cwd === 'string'
       && typeof c.env === 'object' && c.env !== null
+      && (typeof c.jvmArgs === 'string' || c.jvmArgs === undefined)
+      && (typeof c.args === 'string' || c.args === undefined)
+      && (typeof c.runtime === 'object' || c.runtime === undefined)
       && typeof c.createdAt === 'number'
       && typeof c.updatedAt === 'number'
       && (c.lastRunAt === null || typeof c.lastRunAt === 'number'),
@@ -95,6 +113,9 @@ export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { na
         command: input.command ?? existing.command,
         cwd: input.cwd ?? existing.cwd,
         env: input.env ?? existing.env,
+        jvmArgs: input.jvmArgs ?? existing.jvmArgs,
+        args: input.args ?? existing.args,
+        runtime: input.runtime ?? existing.runtime,
         updatedAt: now,
       }
       configs[idx] = updated
@@ -110,6 +131,9 @@ export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { na
     command: input.command ?? '',
     cwd: input.cwd ?? '.',
     env: input.env ?? {},
+    jvmArgs: input.jvmArgs ?? '',
+    args: input.args ?? '',
+    runtime: input.runtime,
     createdAt: now,
     updatedAt: now,
     lastRunAt: null,

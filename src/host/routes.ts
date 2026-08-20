@@ -25,8 +25,8 @@ export const STARTER_API = {
   run: '/api/dsh-better-sidebar-starter/run',
   stop: '/api/dsh-better-sidebar-starter/stop',
   logsWs: '/api/dsh-better-sidebar-starter/logs',
+  detectEnv: '/api/dsh-better-sidebar-starter/detect-env',
 }
-
 /** Cap on JSON request bodies. */
 const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
 
@@ -149,6 +149,11 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
             env: typeof input.env === 'object' && input.env !== null
               ? input.env as Record<string, string>
               : {},
+            jvmArgs: typeof input.jvmArgs === 'string' ? input.jvmArgs : '',
+            args: typeof input.args === 'string' ? input.args : '',
+            runtime: typeof input.runtime === 'object' && input.runtime !== null
+              ? input.runtime as RunConfig['runtime']
+              : undefined,
           })
           writeJson(res, 200, { config })
           return
@@ -214,16 +219,26 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
           writeJson(res, 404, { error: 'config not found' })
           return
         }
-        // Resolve the config's working directory (relative to session cwd).
+        // Resolve the config's working directory.
+        // config.cwd may be '.' (root), a relative path, or an absolute path
+        // (from the directory tree picker which returns absolute paths).
+        const { isAbsolute, resolve } = await import('node:path')
+        const configCwd = config.cwd === '.' || config.cwd === ''
+          ? cwd
+          : isAbsolute(config.cwd)
+            ? config.cwd
+            : resolve(cwd, config.cwd)
         const gate = createSessionGate(ctx, queryParam(url, 'sessionId') ?? '', queryParam(url, 'cwd'))
-        const configCwd = config.cwd === '.' ? cwd : `${cwd}/${config.cwd}`
         const verdict = await gate(configCwd)
         if (!verdict.ok) {
           writeJson(res, 400, { error: `config cwd gate: ${verdict.error}` })
           return
         }
         await stampLastRun(cwd, config.id)
-        const instance = kernels.spawnConfig(config, verdict.canonical)
+        const globalEnv = typeof body.globalEnv === 'object' && body.globalEnv !== null
+          ? body.globalEnv as Record<string, string>
+          : {}
+        const instance = kernels.spawnConfig(config, verdict.canonical, globalEnv)
         writeJson(res, 200, { instance })
       },
     },
@@ -240,6 +255,135 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
         }
         const stopped = kernels.stop(body.instanceId)
         writeJson(res, 200, { ok: true, stopped })
+      },
+    },
+    // --------------------------------------------------- detect-env GET
+    {
+      kind: 'exact',
+      path: STARTER_API.detectEnv,
+      handler: async (req, res) => {
+        if (!fence(req)) { writeJson(res, 403, { error: 'forbidden' }); return }
+        // Detect Java/Node/Python from system env and common paths.
+        const { existsSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        const { execFileSync } = await import('node:child_process')
+        const isWin = process.platform === 'win32'
+
+        const result: { javaHome?: string; nodePath?: string; pythonPath?: string; mvnPath?: string; home?: string; _diagSystemRoot?: string; _diagPathHasSystem32?: boolean } = {}
+        result.home = process.env.USERPROFILE ?? process.env.HOME ?? ''
+        result._diagSystemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? '(none)'
+        result._diagPathHasSystem32 = (process.env.PATH ?? '').toLowerCase().includes('system32')
+
+        // Java: check JAVA_HOME, then scan .jdks
+        if (process.env.JAVA_HOME && process.env.JAVA_HOME.trim() !== '') {
+          const home = process.env.JAVA_HOME.trim()
+          if (existsSync(join(home, 'bin', isWin ? 'java.exe' : 'java'))) {
+            result.javaHome = home
+          }
+        }
+        if (result.javaHome === undefined) {
+          const userHome = process.env.USERPROFILE ?? process.env.HOME ?? ''
+          // Candidate roots containing JDK-install dirs, per platform.
+          const scanRoots = isWin
+            ? [join(userHome, '.jdks')]
+            : [
+                // macOS: Homebrew + Xcode / manual installs
+                '/Library/Java/JavaVirtualMachines',
+                join(userHome, 'Library/Java/JavaVirtualMachines'),
+                '/opt/homebrew/opt',
+                // Linux: standard JVM roots
+                '/usr/lib/jvm',
+                '/usr/java',
+              ]
+          const listDirs = (base: string): string[] => {
+            if (!existsSync(base)) return []
+            if (isWin) {
+              return execFileSync('cmd', ['/c', 'dir', '/b', '/ad', base], {
+                encoding: 'utf8', timeout: 3000, windowsHide: true,
+              }).split('\n').map((s: string) => s.trim()).filter((s: string) => s !== '')
+            }
+            // POSIX: readdir via fs is unavailable here; use `ls -1 -p` and strip trailing '/'.
+            const out = execFileSync('ls', ['-1', '-p', base], {
+              encoding: 'utf8', timeout: 3000,
+            })
+            return out.split('\n').map((s: string) => s.trim().replace(/\/$/, '')).filter((s: string) => s !== '')
+          }
+          for (const base of scanRoots) {
+            try {
+              const dirs = listDirs(base)
+              let best: string | null = null
+              let bestScore = -1
+              for (const d of dirs) {
+                const home = join(base, d)
+                if (existsSync(join(home, 'bin', isWin ? 'java.exe' : 'java'))) {
+                  const verMatch = d.match(/(\d+)(?:\.|$)/)
+                  const ver = verMatch ? parseInt(verMatch[1], 10) : 0
+                  const isRealJdk = /jdk|corretto|temurin|zulu|liberica/i.test(d)
+                  const score = ver + (isRealJdk ? 1000 : 0)
+                  if (score > bestScore) { bestScore = score; best = home }
+                }
+              }
+              if (best !== null) { result.javaHome = best; break }
+            } catch { /* dir failed — try next */ }
+          }
+        }
+
+        // Node: check NODE_PATH, then `which node`
+        if (process.env.NODE_PATH && process.env.NODE_PATH.trim() !== '') {
+          result.nodePath = process.env.NODE_PATH.trim()
+        } else {
+          try {
+            const nodeBin = execFileSync(isWin ? 'where' : 'which',
+              isWin ? ['node.exe'] : ['node'],
+              { encoding: 'utf8', timeout: 3000, windowsHide: true }
+            ).split('\n')[0]?.trim()
+            if (nodeBin) {
+              // node.exe in C:\...\nodejs\node.exe → C:\...\nodejs
+              const lastSep = Math.max(nodeBin.lastIndexOf('/'), nodeBin.lastIndexOf('\\'))
+              const dir = lastSep >= 0 ? nodeBin.substring(0, lastSep) : nodeBin
+              result.nodePath = dir
+            }
+          } catch { /* not found */ }
+        }
+
+        // Python: check PYTHON_PATH, then `which python`
+        if (process.env.PYTHON_PATH && process.env.PYTHON_PATH.trim() !== '') {
+          result.pythonPath = process.env.PYTHON_PATH.trim()
+        } else {
+          try {
+            const pyBin = execFileSync(isWin ? 'where' : 'which',
+              isWin ? ['python.exe'] : ['python3'],
+              { encoding: 'utf8', timeout: 3000, windowsHide: true }
+            ).split('\n')[0]?.trim()
+            if (pyBin) {
+              const lastSep = Math.max(pyBin.lastIndexOf('/'), pyBin.lastIndexOf('\\'))
+              const dir = lastSep >= 0 ? pyBin.substring(0, lastSep) : pyBin
+              result.pythonPath = dir
+            }
+          } catch { /* not found */ }
+        }
+
+        // Maven: check MAVEN_HOME / MVN_PATH, then `where mvn`
+        if (process.env.MAVEN_HOME && process.env.MAVEN_HOME.trim() !== '') {
+          result.mvnPath = process.env.MAVEN_HOME.trim()
+        } else if (process.env.MVN_PATH && process.env.MVN_PATH.trim() !== '') {
+          result.mvnPath = process.env.MVN_PATH.trim()
+        } else {
+          try {
+            const mvnBin = execFileSync(isWin ? 'where' : 'which',
+              isWin ? ['mvn.cmd'] : ['mvn'],
+              { encoding: 'utf8', timeout: 3000, windowsHide: true }
+            ).split('\n')[0]?.trim()
+            if (mvnBin) {
+              // mvn.cmd in ...\apache-maven-x\bin\mvn.cmd → ...\apache-maven-x\bin
+              const lastSep = Math.max(mvnBin.lastIndexOf('/'), mvnBin.lastIndexOf('\\'))
+              const dir = lastSep >= 0 ? mvnBin.substring(0, lastSep) : mvnBin
+              result.mvnPath = dir
+            }
+          } catch { /* not found */ }
+        }
+
+        writeJson(res, 200, result)
       },
     },
   ]

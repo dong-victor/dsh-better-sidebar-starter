@@ -6,6 +6,14 @@
 /** Supported configuration types. */
 export type RunConfigType = 'npm' | 'springboot' | 'python' | 'custom'
 
+/** Per-config runtime tool overrides (optional; empty string = use global/system). */
+export interface RunRuntime {
+  java?: string
+  node?: string
+  python?: string
+  mvn?: string
+}
+
 /** One persisted run configuration. */
 export interface RunConfig {
   id: string
@@ -14,6 +22,12 @@ export interface RunConfig {
   command: string
   cwd: string
   env: Record<string, string>
+  /** JVM arguments (springboot only, e.g. "-Xmx512m -Dspring.profiles.active=dev"). */
+  jvmArgs?: string
+  /** Program arguments (appended after command, e.g. "--server.port=8080"). */
+  args?: string
+  /** Per-config runtime tool overrides. */
+  runtime?: RunRuntime
   createdAt: number
   updatedAt: number
   lastRunAt: number | null
