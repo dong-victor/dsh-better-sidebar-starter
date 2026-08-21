@@ -10,10 +10,18 @@ import type { Context } from 'cordis'
 import type { LogEntry, RunInstance } from './types.ts'
 import type { WsMessage } from './types.ts'
 import { parseAnsi, segmentFgColor, segmentBgColor, type AnsiSegment } from './ansi.ts'
-import { highlightLogText } from './logHighlight.ts'
+import { highlightLogText, type LogCodeLink } from './logHighlight.ts'
 import { StopIcon, RestartIcon, TrashIcon, SendToChatIcon } from './icons.tsx'
 import { appendToDraft } from './conversationDraft.ts'
 import { showToast } from './utils.ts'
+
+/** API base. */
+const API_BASE = '/api/dsh-better-sidebar-starter'
+
+/** Structural face of ctx.betterSidebar (openFile only). */
+interface BetterSidebarLike {
+  openFile(scope: { sessionId: string; cwd?: string }, path: string, title?: string): void
+}
 
 /** Props for the log view. */
 export interface LogViewProps {
@@ -22,6 +30,8 @@ export interface LogViewProps {
   ctx: Context
   /** The session to send selected text into. */
   sessionId: string
+  /** Session working directory (for locating source files / openFile scope). */
+  cwd?: string
   onStop: () => void
   onRestart: () => void
 }
@@ -34,8 +44,8 @@ interface LogLine {
 
 /** Render ANSI-colored text segments, applying Java-log syntax highlighting
  *  to text the program did not color itself (ANSI-colored spans keep the
- *  program's own colors). */
-function renderAnsiLine(text: string, keyBase: string): ReactNode {
+ *  program's own colors). Tokens with a source link become clickable. */
+function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link: LogCodeLink) => void): ReactNode {
   const segments = parseAnsi(text)
   const nodes: ReactNode[] = []
   let hlCounter = 0
@@ -63,7 +73,17 @@ function renderAnsiLine(text: string, keyBase: string): ReactNode {
         const style: Record<string, string> = { ...baseStyle }
         if (h.color !== undefined) style.color = h.color
         if (h.bold === true) style.fontWeight = 'bold'
-        nodes.push(createElement('span', { key: `${keyBase}-${i}-hl${hlCounter++}`, style }, h.text))
+        nodes.push(createElement('span', {
+          key: `${keyBase}-${i}-hl${hlCounter++}`,
+          className: h.link !== undefined ? 'sts-log-link' : undefined,
+          style,
+          onClick: h.link !== undefined
+            ? (e: MouseEvent) => {
+                e.stopPropagation()
+                onLinkClick(h.link!)
+              }
+            : undefined,
+        }, h.text))
       }
     }
   }
@@ -71,7 +91,7 @@ function renderAnsiLine(text: string, keyBase: string): ReactNode {
 }
 
 /** The log view component. */
-export function LogView({ instance, ctx, sessionId, onStop, onRestart }: LogViewProps): ReactNode {
+export function LogView({ instance, ctx, sessionId, cwd, onStop, onRestart }: LogViewProps): ReactNode {
   const [logLines, setLogLines] = useState<LogLine[]>([])
   const [autoScroll, setAutoScroll] = useState(true)
   const [exitInfo, setExitInfo] = useState<{ status: string; exitCode: number | null } | null>(null)
@@ -103,6 +123,61 @@ export function LogView({ instance, ctx, sessionId, onStop, onRestart }: LogView
       showToast(`已将选中文本（${text.length} 字符）发送到对话`, true)
     } else {
       showToast('发送失败：对话服务不可用', false)
+    }
+  }
+
+  /** Open the source file behind a highlighted class / frame / location token. */
+  const handleCodeClick = async (link: LogCodeLink): Promise<void> => {
+    const payload: Record<string, unknown> = { root: instance.cwd }
+    if (link.kind === 'class' || link.kind === 'frame') payload.className = link.className
+    if (link.file !== undefined) payload.file = link.file
+    if (link.method !== undefined && link.method !== '<init>' && link.method !== '<clinit>') payload.method = link.method
+    if (link.line !== undefined) payload.line = link.line
+    try {
+      // The host resolves the session cwd from the query — sessionId is required.
+      const params = new URLSearchParams({ sessionId })
+      if (cwd !== undefined && cwd !== '') params.set('cwd', cwd)
+      const resp = await fetch(`${API_BASE}/locate-source?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!resp.ok) {
+        // Surface the host's error message (e.g. missing sessionId) instead
+        // of a generic failure.
+        let reason = '定位源码失败'
+        try {
+          const err = await resp.json() as { error?: string }
+          if (typeof err.error === 'string' && err.error !== '') reason = err.error
+        } catch { /* non-JSON error body — keep generic message */ }
+        showToast(reason, false)
+        return
+      }
+      const data = await resp.json() as { ok: boolean; path?: string; line?: number; reason?: string }
+      if (data.ok !== true || typeof data.path !== 'string') {
+        showToast(data.reason ?? '未找到源文件', false)
+        return
+      }
+      const base = data.path.split(/[\\/]/).pop() ?? data.path
+      const line = typeof data.line === 'number' ? data.line : undefined
+      const title = line !== undefined ? `${base} : ${line}` : base
+      const betterSidebar = (ctx as { betterSidebar?: BetterSidebarLike }).betterSidebar
+      // Open in the session's sidebar editor.
+      if (betterSidebar !== undefined) {
+        betterSidebar.openFile({ sessionId, cwd }, data.path, title)
+      }
+      // Copy "File.java:line" so the user can jump in an unsupported editor.
+      try {
+        void navigator.clipboard?.writeText(`${base}${line !== undefined ? `:${line}` : ''}`)
+      } catch { /* clipboard unavailable — ignore */ }
+      showToast(
+        line !== undefined
+          ? `已打开 ${base}，定位到第 ${line} 行（已复制 ${base}:${line}）`
+          : `已打开 ${base}`,
+        true,
+      )
+    } catch {
+      showToast('定位源码失败', false)
     }
   }
 
@@ -201,23 +276,23 @@ export function LogView({ instance, ctx, sessionId, onStop, onRestart }: LogView
             className: 'sts-icon-btn stop',
             title: '停止',
             onClick: onStop,
-          }, StopIcon({ size: 14 }), ' 停止')
+          }, StopIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, '停止'))
         : null,
       createElement('button', {
         className: 'sts-icon-btn',
         title: '重启',
         onClick: onRestart,
-      }, RestartIcon({ size: 14 }), ' 重启'),
+      }, RestartIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, '重启')),
       createElement('button', {
         className: 'sts-icon-btn',
         title: '清空',
         onClick: handleClear,
-      }, TrashIcon({ size: 14 }), ' 清空'),
+      }, TrashIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, '清空')),
       createElement('button', {
         className: 'sts-icon-btn send',
         title: selLength > 0 ? `发送选中的 ${selLength} 字符到对话` : '发送选中的文本到对话',
         onClick: handleSendSelection,
-      }, SendToChatIcon({ size: 14 }), selLength > 0 ? ` 发送选中(${selLength})` : ' 发送选中'),
+      }, SendToChatIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, selLength > 0 ? `发送选中(${selLength})` : '发送选中')),
       createElement('label', {
         className: 'sts-log-toolbar-label',
         onClick: () => setAutoScroll((v) => !v),
@@ -236,7 +311,7 @@ export function LogView({ instance, ctx, sessionId, onStop, onRestart }: LogView
             return createElement('span', {
               key: segKey,
               className: entry.stream === 'stderr' ? 'sts-log-stderr' : '',
-            }, renderAnsiLine(entry.text, segKey))
+            }, renderAnsiLine(entry.text, segKey, (link) => { void handleCodeClick(link) }))
           }),
         )
       }),

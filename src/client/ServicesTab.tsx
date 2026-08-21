@@ -358,6 +358,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
               instance: selectedInstance,
               ctx: props.ctx,
               sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '',
+              cwd: scope.cwd,
               onStop: () => { void handleStop(selectedInstance.id) },
               onRestart: () => { void handleRestart(selectedInstance.id) },
             })

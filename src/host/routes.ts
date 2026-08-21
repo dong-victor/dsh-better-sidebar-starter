@@ -17,6 +17,7 @@ import { isTrustedApiRequest } from './fence.ts'
 import { createSessionGate, sessionCwdOf } from './gate.ts'
 import { readConfigs, upsertConfig, deleteConfig, stampLastRun, type RunConfig } from './configStore.ts'
 import { ProcessManager, type RunInstance } from './processManager.ts'
+import { locateSource } from './sourceLocator.ts'
 
 /** Route family base. */
 export const STARTER_API = {
@@ -26,6 +27,7 @@ export const STARTER_API = {
   stop: '/api/dsh-better-sidebar-starter/stop',
   logsWs: '/api/dsh-better-sidebar-starter/logs',
   detectEnv: '/api/dsh-better-sidebar-starter/detect-env',
+  locateSource: '/api/dsh-better-sidebar-starter/locate-source',
 }
 /** Cap on JSON request bodies. */
 const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
@@ -180,6 +182,35 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
         }
 
         writeJson(res, 405, { error: `method not allowed: ${method}` })
+      },
+    },
+    // --------------------------------------------------------- locate-source POST
+    // Resolve a logged class name / stack frame to a source file under the
+    // session cwd (click-through from the log view).
+    {
+      kind: 'exact',
+      path: STARTER_API.locateSource,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const cwd = await resolveCwd(url, res)
+        if (cwd === null) return
+        const body = await readJsonBody(req)
+        if (body === undefined) {
+          writeJson(res, 400, { error: 'invalid JSON body' })
+          return
+        }
+        const className = typeof body.className === 'string' ? body.className : undefined
+        const file = typeof body.file === 'string' ? body.file : undefined
+        const method = typeof body.method === 'string' ? body.method : undefined
+        const line = typeof body.line === 'number' ? body.line : undefined
+        const root = typeof body.root === 'string' ? body.root : undefined
+        if (className === undefined && file === undefined) {
+          writeJson(res, 400, { error: 'className or file is required' })
+          return
+        }
+        const result = await locateSource(cwd, { className, file, method, line, root })
+        writeJson(res, 200, result)
       },
     },
     // --------------------------------------------------------- instances GET

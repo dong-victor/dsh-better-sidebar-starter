@@ -218,13 +218,26 @@ export const STYLES_CSS = `
 .sts-icon-btn.trash { color: #eb5757; }
 .sts-icon-btn.dup { color: var(--dsw-alias-label-secondary, #b0b0b0); }
 .sts-icon-btn.send { color: #4a90d9; }
-/* Toolbar buttons (log view) are always visible and fit icon + text. */
+/* Toolbar buttons (log view) are icon-only; the label expands on hover. */
 .sts-log-toolbar .sts-icon-btn {
-  width: auto;
+  width: 26px;
   height: 26px;
-  padding: 0 8px;
-  gap: 3px;
+  padding: 0 6px;
+  gap: 0;
   font-size: 11px;
+  opacity: 1;
+}
+.sts-log-toolbar .sts-icon-btn .sts-icon-btn-label {
+  display: inline-block;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 0.18s ease, opacity 0.18s ease, margin-left 0.18s ease;
+}
+.sts-log-toolbar .sts-icon-btn:hover .sts-icon-btn-label {
+  max-width: 120px;
+  margin-left: 4px;
   opacity: 1;
 }
 
@@ -313,6 +326,16 @@ export const STYLES_CSS = `
 }
 .sts-log-line {
   min-height: 1em;
+}
+/* Clickable source tokens (classes / stack frames) inside the log. */
+.sts-log-link {
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(97, 175, 239, 0.4);
+  transition: background 0.1s ease;
+}
+.sts-log-link:hover {
+  background: rgba(97, 175, 239, 0.14);
+  border-bottom-color: #61afef;
 }
 
 /* ===== Config detail ===== */

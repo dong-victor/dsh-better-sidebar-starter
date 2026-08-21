@@ -258,6 +258,18 @@ function buildEnv(config: RunConfig, globalEnv: Record<string, string>): Record<
     }
   }
 
+  // ---- Force UTF-8 output from child processes ----
+  // Windows shells default to the GBK code page, and JDK ≤17 writes console
+  // output in the platform charset (GBK) — both produce U+FFFD when the host
+  // decodes UTF-8. Pin the common runtimes to UTF-8 (chcp 65001 already
+  // covers cmd.exe). Existing user-provided values are respected.
+  if (env.JAVA_TOOL_OPTIONS === undefined || env.JAVA_TOOL_OPTIONS === '') {
+    env.JAVA_TOOL_OPTIONS = '-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8'
+  }
+  if (env.PYTHONIOENCODING === undefined || env.PYTHONIOENCODING === '') {
+    env.PYTHONIOENCODING = 'utf-8'
+  }
+
   // Prepend all tool bin dirs to PATH so mvn/node/python/system resolve.
   if (toolBins.length > 0) {
     const existing = env.PATH ?? ''
@@ -303,6 +315,25 @@ interface ManagedProcess {
   logChars: number
   subscribers: Set<WsType>
   exitTimer: ReturnType<typeof setTimeout> | null
+  /** Streaming UTF-8 decoder (keeps multi-byte chars intact across chunks). */
+  utf8Decoder: TextDecoder
+}
+
+/** Decode one output chunk: streaming UTF-8 (no split-char artifacts), with a
+ *  GBK fallback when the bytes are clearly not valid UTF-8 (legacy Windows
+ *  output); the fallback only wins when it produces fewer replacement chars. */
+function decodeChunk(decoder: TextDecoder, chunk: Buffer): string {
+  let text = decoder.decode(chunk, { stream: true })
+  if (text.includes('\uFFFD')) {
+    try {
+      const gbk = new TextDecoder('gbk').decode(chunk)
+      const count = (s: string): number => s.split('\uFFFD').length - 1
+      if (count(gbk) < count(text)) text = gbk
+    } catch {
+      /* 'gbk' unsupported (small-icu) — keep the UTF-8 result */
+    }
+  }
+  return text
 }
 
 /**
@@ -369,6 +400,7 @@ export class ProcessManager {
       logChars: 0,
       subscribers: new Set(),
       exitTimer: null,
+      utf8Decoder: new TextDecoder('utf-8'),
     }
 
     let child: ReturnType<typeof spawn>
@@ -402,10 +434,10 @@ export class ProcessManager {
     this.processes.set(id, managed)
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      this.appendLog(managed, 'stdout', chunk.toString('utf8'))
+      this.appendLog(managed, 'stdout', decodeChunk(managed.utf8Decoder, chunk))
     })
     child.stderr?.on('data', (chunk: Buffer) => {
-      this.appendLog(managed, 'stderr', chunk.toString('utf8'))
+      this.appendLog(managed, 'stderr', decodeChunk(managed.utf8Decoder, chunk))
     })
     child.on('error', (error) => {
       this.appendLog(managed, 'stderr', `Process error: ${error.message}\n`)
