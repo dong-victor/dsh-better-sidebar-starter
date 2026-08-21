@@ -11,9 +11,8 @@ import type { RunConfig, RunInstance } from './types.ts'
 import { ConfigTree } from './ConfigTree.tsx'
 import { LogView } from './LogView.tsx'
 import { LogHistoryView } from './LogHistoryView.tsx'
-import { ConfigDetail } from './ConfigDetail.tsx'
 import { ConfigEditorModal, type ConfigEditorModalProps } from './ConfigEditorModal.tsx'
-import { RocketIcon, PlusIcon, FileIcon } from './icons.tsx'
+import { RocketIcon, PlusIcon } from './icons.tsx'
 import { STYLES_CSS } from './styles.ts'
 
 /** API base. */
@@ -48,7 +47,6 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
   const [splitRatio, setSplitRatio] = useState(0.33)
   const [dragging, setDragging] = useState(false)
   const [isHorizontal, setIsHorizontal] = useState(true) // true = left/right split (right panel), false = top/bottom (bottom panel)
-  const [historyOpen, setHistoryOpen] = useState(false) // persisted log browser
 
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -323,15 +321,6 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
         onClick: handleNewConfig,
       },
         createElement(PlusIcon, { size: 13 }), '新建配置'),
-      createElement('button', {
-        className: `sts-toolbar-btn${historyOpen ? ' active' : ''}`,
-        title: '查看持久化历史日志（.dsh/logs，含启动失败记录）',
-        onClick: () => {
-          setHistoryOpen((v) => !v)
-          if (historyOpen) { /* keep selection; returning shows it again */ }
-        },
-      },
-        createElement(FileIcon, { size: 13 }), '历史日志'),
     ),
     // Split pane (horizontal or vertical based on panel position)
     createElement('div', { className: `sts-split${isHorizontal ? '' : ' sts-split-vertical'}` },
@@ -362,33 +351,28 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
         className: `sts-split-gutter${dragging ? ' dragging' : ''}${isHorizontal ? '' : ' sts-split-gutter-v'}`,
         onMouseDown: handleMouseDown,
       }),
-      // Second pane: log view or config detail or history or empty
+      // Second pane: log view or config history or empty
       createElement('div', { className: `sts-split-second${isHorizontal ? '' : ' sts-split-second-v'}` },
-        historyOpen
-          ? createElement(LogHistoryView, {
+        selectedInstance !== null
+          ? createElement(LogView, {
+              instance: selectedInstance,
               ctx: props.ctx,
               sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '',
               cwd: scope.cwd,
-              onClose: () => setHistoryOpen(false),
+              onStop: () => { void handleStop(selectedInstance.id) },
+              onRestart: () => { void handleRestart(selectedInstance.id) },
             })
-          : selectedInstance !== null
-            ? createElement(LogView, {
-                instance: selectedInstance,
-                ctx: props.ctx,
-                sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '',
-                cwd: scope.cwd,
-                onStop: () => { void handleStop(selectedInstance.id) },
-                onRestart: () => { void handleRestart(selectedInstance.id) },
-              })
-            : selectedConfig !== null
-              ? createElement(ConfigDetail, {
-                  config: selectedConfig,
-                  onStart: () => { void handleStart(selectedConfig.id) },
-                  onEdit: () => handleEditConfig(selectedConfig.id),
-                  onDuplicate: () => handleDuplicateConfig(selectedConfig.id),
-                  onDelete: () => { void handleDeleteConfig(selectedConfig.id) },
+          : selectedConfig !== null
+              // Clicking a config shows its persisted run logs directly
+              // (no config-detail pane).
+              ? createElement(LogHistoryView, {
+                  ctx: props.ctx,
+                  sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '',
+                  cwd: scope.cwd,
+                  filter: selectedConfig.name,
+                  onClose: () => { setSelectedConfigId(null) },
                 })
-              : createElement('div', { className: 'sts-empty' }, '选择左侧配置查看详情或日志'),
+              : createElement('div', { className: 'sts-empty' }, '选择左侧配置查看其历史日志，或选择运行中的服务查看实时日志'),
       ),
     ),
     // Modal

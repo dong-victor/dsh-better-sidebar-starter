@@ -49,6 +49,9 @@ export interface LogHistoryViewProps {
   cwd?: string
   /** Close the whole history browser (back to the services view). */
   onClose: () => void
+  /** Optional run config name: when set, only that config's log files are
+   *  shown (used when clicking a config in the tree). */
+  filter?: string
 }
 
 /** Split a raw log entry into RenderLine-ready single-line entries. */
@@ -69,7 +72,7 @@ function splitEntry(entry: LogEntry, keyBase: number, out: LogLine[]): void {
 }
 
 /** The log history viewer. */
-export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewProps): ReactNode {
+export function LogHistoryView({ ctx, sessionId, cwd, onClose, filter }: LogHistoryViewProps): ReactNode {
   const [files, setFiles] = useState<LogFileInfo[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [activeFile, setActiveFile] = useState<LogFileInfo | null>(null)
@@ -84,7 +87,7 @@ export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewP
       if (cwd !== undefined && cwd !== '') params.set('cwd', cwd)
       const resp = await fetch(`${API_BASE}/logs-history?${params.toString()}`)
       if (!resp.ok) {
-        let reason = '加载历史日志失败'
+        let reason = filter !== undefined ? '加载历史日志失败' : '加载历史日志失败'
         try {
           const err = await resp.json() as { error?: string }
           if (typeof err.error === 'string' && err.error !== '') reason = err.error
@@ -94,14 +97,18 @@ export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewP
         return
       }
       const data = await resp.json() as { logs?: LogFileInfo[] }
-      setFiles(data.logs ?? [])
+      const all = data.logs ?? []
+      // File names are `<safeName>_<stamp>.log`; configs never contain the
+      // stamp, so a prefix match on the name string is unambiguous.
+      const shown = filter !== undefined ? all.filter((f) => f.name.startsWith(filter)) : all
+      setFiles(shown)
     } catch {
       showToast('加载历史日志失败', false)
       setFiles([])
     } finally {
       setLoading(false)
     }
-  }, [sessionId, cwd])
+  }, [sessionId, cwd, filter])
 
   // Initial load of the file list.
   const [initialized, setInitialized] = useState(false)
@@ -144,9 +151,10 @@ export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewP
 
   // ---- list view ----
   if (activeFile === null) {
+    const title = filter !== undefined ? `${filter} · 历史日志` : '历史日志'
     return createElement('div', { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } },
       createElement('div', { className: 'sts-log-toolbar' },
-        '历史日志',
+        title,
         createElement('div', { className: 'sts-log-toolbar-spacer' }),
         createElement('button', {
           className: 'sts-icon-btn',
@@ -155,9 +163,9 @@ export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewP
         }, RefreshIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, '刷新')),
         createElement('button', {
           className: 'sts-icon-btn',
-          title: '关闭历史日志',
+          title: filter !== undefined ? '返回服务视图' : '关闭历史日志',
           onClick: onClose,
-        }, CloseIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, '关闭')),
+        }, CloseIcon({ size: 14 }), createElement('span', { className: 'sts-icon-btn-label' }, filter !== undefined ? '返回' : '关闭')),
       ),
       createElement('div', {
         style: { overflow: 'auto', flex: 1, minHeight: 0, padding: '4px 0' },
@@ -165,7 +173,10 @@ export function LogHistoryView({ ctx, sessionId, cwd, onClose }: LogHistoryViewP
         loading && files === null
           ? createElement('div', { className: 'sts-empty' }, '加载中…')
           : files !== null && files.length === 0
-            ? createElement('div', { className: 'sts-empty' }, '暂无历史日志（工作空间 .dsh/logs 为空）。每次启动服务都会在 <工作空间>/.dsh/logs 下永久保留一份日志，即使启动失败或实例被清理也能查看。')
+            ? createElement('div', { className: 'sts-empty' },
+                filter !== undefined
+                  ? `「${filter}」暂无历史日志。每次启动都会在 <工作空间>/logs/ 下永久保留一份日志，即使启动失败或 dsh 重启也能查看。`
+                  : '暂无历史日志（工作空间 logs/ 为空）。每次启动服务都会在 <工作空间>/logs/ 下永久保留一份日志，即使启动失败或 dsh 重启也能查看。')
             : createElement('div', {},
                 (files ?? []).map((f) =>
                   createElement('button', {

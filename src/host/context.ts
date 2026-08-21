@@ -87,6 +87,4 @@ export interface PluginContext {
   tools?: PluginToolRuntime
   /** Structural system-prompt service (may be absent on very old hosts). */
   systemPrompt?: PluginSystemPrompt
-  /** cordis logger. */
-  log?: { info(...args: unknown[]): void; warn(...args: unknown[]): void; error(...args: unknown[]): void }
 }

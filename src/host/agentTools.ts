@@ -177,7 +177,9 @@ async function startService(kernels: ProcessManager, workspace: string, configId
   const configCwd = await resolveConfigCwd(config, workspace)
   if (!existsSync(configCwd)) throw new Error(`config cwd 不存在: ${configCwd}`)
   await stampLastRun(workspace, config.id)
-  return kernels.spawnConfig(config, configCwd, globalEnv ?? {})
+  // Logs always land under the session workspace root (<workspace>/logs/),
+  // never under the config's own working directory.
+  return kernels.spawnConfig(config, configCwd, globalEnv ?? {}, workspace)
 }
 
 /** Register every tool and the guidance section; returns the disposer. */
@@ -306,7 +308,7 @@ export function registerAgentTools(ctx: PluginContext, kernels: ProcessManager):
         workspace: { type: 'string', description: '工作空间绝对路径' },
         name: { type: 'string', description: '配置名称（建议含项目名，如 cassiopeia-ap）' },
         type: { type: 'string', enum: ['npm', 'springboot', 'python', 'custom'], default: 'custom' },
-        command: { type: 'string', description: '启动命令，如 mvn spring-boot:run / npm run dev' },
+        command: { type: 'string', description: '启动命令，直接写命令名（如 npm run dev / mvn spring-boot:run / python main.py），不要写 node/npm/python/mvn 的绝对路径——运行环境已注入 PATH' },
         cwd: { type: 'string', description: '工作目录，相对工作空间或绝对路径，默认 .' },
         env: { type: 'object', additionalProperties: { type: 'string' }, description: '环境变量键值' },
         jvmArgs: { type: 'string', description: 'JVM 参数（springboot），如 -Xmx512m -Dspring.profiles.active=dev' },
@@ -584,14 +586,14 @@ export function registerAgentTools(ctx: PluginContext, kernels: ProcessManager):
   def({
     name: `${TOOL_PREFIX}log_history`,
     description:
-      '查看工作空间下的持久化运行日志（.dsh/logs/*.log，每次启动都会落盘、永久保留，即使启动失败或实例已清理也能查到）。' +
+      '查看工作空间下的持久化运行日志（workspace/logs/*.log，每次启动都会落盘、永久保留；即使启动失败、实例被清理或 dsh 重启后也能查到）。' +
       '不传 file 时列出历史日志文件（新的在前）；传 file（或文件名）读取对应日志内容（tail 可限制条数）。' +
       'Triggers: 查看历史日志, 上一次启动日志, 启动失败的日志, 日志找不到了, 实例已清理.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['workspace'],
       properties: {
         workspace: { type: 'string', description: '工作空间绝对路径' },
-        file: { type: 'string', description: '日志文件绝对路径或 .dsh/logs 下的文件名（可选）' },
+        file: { type: 'string', description: '日志文件绝对路径或 logs/ 下的文件名（可选）' },
         tail: { type: 'number', description: '读取时返回末尾多少条（默认 500，最大 5000）' },
       },
     },
@@ -616,7 +618,7 @@ export function registerAgentTools(ctx: PluginContext, kernels: ProcessManager):
         }
         if (v.error !== undefined) return textBlock(`错误：${v.error}`)
         if (v.files !== undefined) {
-          if (v.files.length === 0) return textBlock('该工作空间暂无历史运行日志（.dsh/logs 为空）。')
+          if (v.files.length === 0) return textBlock('该工作空间暂无历史运行日志（workspace/logs 为空）。')
           const lines = v.files.map((f, i) => `${i + 1}. ${f.name}  （${new Date(f.mtime).toLocaleString()}，${(f.size / 1024).toFixed(1)} KB）\n   ${f.file}`)
           return textBlock(`共 ${v.files.length} 个历史日志：\n${lines.join('\n')}\n\n用 starter_log_history(workspace, file) 读取内容。`)
         }
@@ -638,15 +640,18 @@ export function registerAgentTools(ctx: PluginContext, kernels: ProcessManager):
         const files = await listLogFiles(workspace)
         return { files }
       }
-      // Resolve the file: absolute path, or a file name under .dsh/logs.
-      let abs = isAbsolute(fileParam) ? fileParam : join(workspace, '.dsh', 'logs', basename(fileParam))
-      const rootNorm = resolve(workspace)
-      const rel = abs.startsWith(rootNorm + '\\') || abs.startsWith(rootNorm + '/') || abs === rootNorm
-      if (!rel || !existsSync(abs)) {
-        // Maybe it's a plain name; try the logs dir directly.
-        abs = join(workspace, '.dsh', 'logs', basename(fileParam))
-        if (!existsSync(abs)) throw new Error(`日志文件不存在: ${fileParam}`)
+      // Resolve the file: absolute path, or a file name under logs/.
+      const roots = [workspace, join(workspace, 'logs'), join(workspace, '.dsh', 'logs')]
+      let abs = ''
+      if (isAbsolute(fileParam)) {
+        abs = fileParam
+      } else {
+        for (const r of roots) {
+          const candidate = join(r, basename(fileParam))
+          if (existsSync(candidate)) { abs = candidate; break }
+        }
       }
+      if (abs === '' || !existsSync(abs)) throw new Error(`日志文件不存在: ${fileParam}`)
       const logs = await readLogFile(abs, tail)
       return { file: abs, total: logs.length, logs }
     },
@@ -677,9 +682,11 @@ export function buildGuidanceText(): string {
     '配置管理(starter_list_configs / get_config / create_config / update_config / delete_config) → ' +
     '服务生命周期(starter_start_service / stop_service / restart_service / list_instances) → ' +
     '日志(starter_get_logs 与侧边栏「服务管理」面板同一份实时日志缓冲，可 tail/sinceTs 参数；' +
-      'starter_log_history 查看 workspace/.dsh/logs 下持久化历史日志——每次启动都落盘、永久保留，启动失败/实例已清理也能查到)。' +
+      'starter_log_history 查看 workspace/logs 下持久化历史日志——每次启动都落盘、永久保留，启动失败/实例清理/dsh 重启都能查到)。' +
     '运行配置持久化在工作空间的 .dsh/run-configs.json，与侧边栏面板数据完全一致：agent 创建/编辑的配置面板立即可见，' +
     'agent 启动的服务实例面板同样可以停止/查看日志。' +
+    '重要：启动命令一律写短命令（npm run dev / npm start / python main.py / mvn spring-boot:run），' +
+    '不要写 node/npm/python/mvn 的绝对路径——插件已把工具链目录注入 PATH，短命令即可解析。' +
     '主动调用规则：当用户要求「扫描工作空间项目 / 生成或编辑启动指令 / 启动/停止/重启服务 / 查看服务日志 / 列出运行配置或服务状态」时，' +
     '应主动使用 starter_* 工具完成，不要等待用户指定工具名；workspace 参数传当前工作空间绝对路径（如 C:\\Users\\dongz\\.dsh\\workspace\\<项目>）。'
   )

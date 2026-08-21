@@ -118,6 +118,30 @@ export async function handleLogCodeClick(
 /** Render ANSI-colored text segments, applying Java-log syntax highlighting
  *  to text the program did not color itself (ANSI-colored spans keep the
  *  program's own colors). Tokens with a source link become clickable. */
+/** Split plain text into plain/url parts. Trailing punctuation that is
+ *  almost certainly sentence text (.,;:)]）。，) stays outside the link. */
+const URL_RE = /https?:\/\/[^\s"'<>()\[\]{}]+/g
+
+function splitUrlParts(text: string): Array<{ text: string; url?: string }> {
+  const out: Array<{ text: string; url?: string }> = []
+  let last = 0
+  for (const m of text.matchAll(URL_RE)) {
+    const idx = m.index ?? 0
+    if (idx > last) out.push({ text: text.slice(last, idx) })
+    let url = m[0]
+    let trail = ''
+    while (url.length > 0 && /[.,;:)\]}》」），。；：]$/.test(url)) {
+      trail = url.slice(-1) + trail
+      url = url.slice(0, -1)
+    }
+    if (url !== '') out.push({ text: url, url })
+    if (trail !== '') out.push({ text: trail })
+    last = idx + m[0].length
+  }
+  if (last < text.length) out.push({ text: text.slice(last) })
+  return out
+}
+
 export function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link: LogCodeLink) => void): ReactNode {
   const segments = parseAnsi(text)
   const nodes: ReactNode[] = []
@@ -140,23 +164,40 @@ export function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link
       if (bg !== null) style.backgroundColor = bg
       nodes.push(createElement('span', { key: `${keyBase}-${i}`, style }, seg.text))
     } else {
-      // Uncolored text: run the log syntax highlighter.
-      const hl = highlightLogText(seg.text)
-      for (const h of hl) {
-        const style: Record<string, string> = { ...baseStyle }
-        if (h.color !== undefined) style.color = h.color
-        if (h.bold === true) style.fontWeight = 'bold'
-        nodes.push(createElement('span', {
-          key: `${keyBase}-${i}-hl${hlCounter++}`,
-          className: h.link !== undefined ? 'sts-log-link' : undefined,
-          style,
-          onClick: h.link !== undefined
-            ? (e: MouseEvent) => {
-                e.stopPropagation()
-                onLinkClick(h.link!)
-              }
-            : undefined,
-        }, h.text))
+      // Uncolored text: URLs become clickable links first, the rest runs
+      // through the log syntax highlighter.
+      for (const part of splitUrlParts(seg.text)) {
+        if (part.url !== undefined) {
+          const url = part.url
+          nodes.push(createElement('span', {
+            key: `${keyBase}-${i}-u${hlCounter++}`,
+            className: 'sts-log-url',
+            style: { ...baseStyle, textDecoration: 'underline', cursor: 'pointer' },
+            title: `在浏览器打开 ${url}`,
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation()
+              try { window.open(url, '_blank', 'noopener') } catch { /* popup blocked */ }
+            },
+          }, part.url))
+          continue
+        }
+        const hl = highlightLogText(part.text)
+        for (const h of hl) {
+          const style: Record<string, string> = { ...baseStyle }
+          if (h.color !== undefined) style.color = h.color
+          if (h.bold === true) style.fontWeight = 'bold'
+          nodes.push(createElement('span', {
+            key: `${keyBase}-${i}-hl${hlCounter++}`,
+            className: h.link !== undefined ? 'sts-log-link' : undefined,
+            style,
+            onClick: h.link !== undefined
+              ? (e: MouseEvent) => {
+                  e.stopPropagation()
+                  onLinkClick(h.link!)
+                }
+              : undefined,
+          }, h.text))
+        }
       }
     }
   }

@@ -374,6 +374,13 @@ export const STYLES_CSS = `
   background: rgba(97, 175, 239, 0.14);
   border-bottom-color: #61afef;
 }
+/* Clickable http(s) URLs inside the log (open in a new browser tab). */
+.sts-log-url {
+  color: #61afef;
+}
+.sts-log-url:hover {
+  background: rgba(97, 175, 239, 0.18);
+}
 
 /* ===== Config detail ===== */
 .sts-detail {

@@ -28,6 +28,13 @@ export function apply(ctx: PluginContext): void {
   const fence = (req: IncomingMessage): boolean => isTrustedApiRequest(req, ctx.webRuntime.trustedHosts)
   const kernels = new ProcessManager()
 
+  // Re-attach services survived a previous host session (their pids are
+  // still alive) so the panel keeps showing and managing them, and their
+  // file-backed logs stay readable after the restart.
+  void kernels.adoptOrphans().then((count) => {
+    if (count > 0) console.log(`[starter] 已接管 ${count} 个跨重启存活的运行服务`)
+  })
+
   ctx.effect(() => {
     const { routes, upgrade } = makeRoutes({ ctx, kernels, fence })
     const disposers = routes.map(route => ctx.webServer.register(route))
