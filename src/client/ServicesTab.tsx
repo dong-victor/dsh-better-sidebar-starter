@@ -194,6 +194,38 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
     setShowModal(true)
   }
 
+  /**
+   * Duplicate a config: open the editor prefilled with ALL of the original
+   * config's info under an auto-generated "xxx-副本" name (deduped against
+   * existing names). Saving it (id omitted) creates a brand-new config.
+   */
+  const handleDuplicateConfig = (configId: string): void => {
+    const config = configs.find((c) => c.id === configId)
+    if (config === undefined) return
+    // Derive a unique copy name: strip a trailing "-副本", then append
+    // "-副本" (or "-副本2", "-副本3", …) while avoiding collisions.
+    const stem = config.name.endsWith('-副本') ? config.name.slice(0, -3) : config.name
+    const taken = new Set(configs.map((c) => c.name))
+    let dupName = `${stem}-副本`
+    let suffix = 2
+    while (taken.has(dupName)) {
+      dupName = `${stem}-副本${suffix}`
+      suffix++
+    }
+    setEditingConfig({
+      // No id → saving creates a new config instead of updating the source.
+      name: dupName,
+      type: config.type,
+      command: config.command,
+      cwd: config.cwd,
+      env: config.env,
+      jvmArgs: config.jvmArgs,
+      args: config.args,
+      runtime: config.runtime,
+    })
+    setShowModal(true)
+  }
+
   /** Save a config (create or update). */
   const handleSaveConfig = useCallback(async (config: ConfigEditorModalProps['config']): Promise<void> => {
     try {
@@ -311,6 +343,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
               onStartConfig: (id: string) => { void handleStart(id) },
               onStopInstance: (id: string) => { void handleStop(id) },
               onEditConfig: handleEditConfig,
+              onDuplicateConfig: handleDuplicateConfig,
             }),
       ),
       // Gutter
@@ -323,6 +356,8 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
         selectedInstance !== null
           ? createElement(LogView, {
               instance: selectedInstance,
+              ctx: props.ctx,
+              sessionId: scope.sessionId ?? store.getSnapshot().sessionId ?? '',
               onStop: () => { void handleStop(selectedInstance.id) },
               onRestart: () => { void handleRestart(selectedInstance.id) },
             })
@@ -331,6 +366,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
                 config: selectedConfig,
                 onStart: () => { void handleStart(selectedConfig.id) },
                 onEdit: () => handleEditConfig(selectedConfig.id),
+                onDuplicate: () => handleDuplicateConfig(selectedConfig.id),
                 onDelete: () => { void handleDeleteConfig(selectedConfig.id) },
               })
             : createElement('div', { className: 'sts-empty' }, '选择左侧配置查看详情或日志'),

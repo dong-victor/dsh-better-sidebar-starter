@@ -216,6 +216,17 @@ export const STYLES_CSS = `
 .sts-icon-btn.stop { color: #eb5757; }
 .sts-icon-btn.gear { color: var(--dsw-alias-label-secondary, #b0b0b0); }
 .sts-icon-btn.trash { color: #eb5757; }
+.sts-icon-btn.dup { color: var(--dsw-alias-label-secondary, #b0b0b0); }
+.sts-icon-btn.send { color: #4a90d9; }
+/* Toolbar buttons (log view) are always visible and fit icon + text. */
+.sts-log-toolbar .sts-icon-btn {
+  width: auto;
+  height: 26px;
+  padding: 0 8px;
+  gap: 3px;
+  font-size: 11px;
+  opacity: 1;
+}
 
 /* ===== Instance row ===== */
 .sts-instance-row {

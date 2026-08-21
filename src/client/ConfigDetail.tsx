@@ -7,13 +7,14 @@
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import type { RunConfig } from './types.ts'
-import { PlayIcon, GearIcon, TrashIcon, typeIcon } from './icons.tsx'
+import { PlayIcon, GearIcon, TrashIcon, CopyIcon, typeIcon } from './icons.tsx'
 
 /** Props for the detail card. */
 export interface ConfigDetailProps {
   config: RunConfig
   onStart: () => void
   onEdit: () => void
+  onDuplicate: () => void
   onDelete: () => void
 }
 
@@ -25,7 +26,7 @@ const TYPE_LABELS: Record<string, string> = {
 }
 
 /** The detail card component. */
-export function ConfigDetail({ config, onStart, onEdit, onDelete }: ConfigDetailProps): ReactNode {
+export function ConfigDetail({ config, onStart, onEdit, onDuplicate, onDelete }: ConfigDetailProps): ReactNode {
   const envEntries = Object.entries(config.env)
   const dateFmt = (ts: number | null): string => {
     if (ts === null) return '—'
@@ -96,6 +97,9 @@ export function ConfigDetail({ config, onStart, onEdit, onDelete }: ConfigDetail
       createElement('div', { className: 'sts-detail-actions' },
         createElement('button', { className: 'sts-detail-btn danger', onClick: onDelete },
           createElement(TrashIcon, { size: 14 }), ' 删除',
+        ),
+        createElement('button', { className: 'sts-detail-btn', onClick: onDuplicate, title: '复制为副本（保留全部信息）' },
+          createElement(CopyIcon, { size: 14 }), ' 复制',
         ),
         createElement('button', { className: 'sts-detail-btn', onClick: onEdit },
           createElement(GearIcon, { size: 14 }), ' 编辑',

@@ -7,7 +7,7 @@
 import { createElement, useState, useMemo, type ReactNode } from 'react'
 import type { RunConfig, RunInstance } from './types.ts'
 import {
-  PlayIcon, StopIcon, GearIcon,
+  PlayIcon, StopIcon, GearIcon, CopyIcon,
   ChevronDownIcon, ChevronRightIcon,
   RunningDotIcon, CheckIcon, ErrorDotIcon,
   typeIcon,
@@ -24,6 +24,8 @@ export interface ConfigTreeProps {
   onStartConfig: (configId: string) => void
   onStopInstance: (instanceId: string) => void
   onEditConfig: (configId: string) => void
+  /** Duplicate a config: opens the editor prefilled with all its info under a new name. */
+  onDuplicateConfig: (configId: string) => void
 }
 
 /** Type group order. */
@@ -46,7 +48,7 @@ function statusIcon(status: string, size: number): ReactNode {
 /** The config tree component. */
 export function ConfigTree(props: ConfigTreeProps): ReactNode {
   const { configs, instances, selectedInstanceId, selectedConfigId,
-    onSelectConfig, onSelectInstance, onStartConfig, onStopInstance, onEditConfig } = props
+    onSelectConfig, onSelectInstance, onStartConfig, onStopInstance, onEditConfig, onDuplicateConfig } = props
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
@@ -155,6 +157,14 @@ export function ConfigTree(props: ConfigTreeProps): ReactNode {
                       onEditConfig(config.id)
                     },
                   }, GearIcon({ size: 12 })),
+                  createElement('button', {
+                    className: 'sts-icon-btn dup',
+                    title: '复制（生成副本配置）',
+                    onClick: (e: MouseEvent) => {
+                      e.stopPropagation()
+                      onDuplicateConfig(config.id)
+                    },
+                  }, CopyIcon({ size: 12 })),
                 ),
               ),
             ]
