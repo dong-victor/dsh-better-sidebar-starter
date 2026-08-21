@@ -1,6 +1,6 @@
 {
   "name": "@dong-victor/dsh-better-sidebar-starter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "dsh-better-sidebar 的运行配置插件：模仿 IntelliJ IDEA 运行/调试配置，支持 npm/springboot/python/custom 命令执行、历史保存、快捷启动、实时日志查看，单 Tab 内分栏布局（左配置树 + 右日志流）",
   "type": "module",
   "engines": {
