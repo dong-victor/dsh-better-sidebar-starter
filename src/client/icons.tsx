@@ -58,6 +58,21 @@ export function CloseIcon({ size }: IconProps): ReactNode {
   return svg(size, `<path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/>`)
 }
 
+/** ◀ Back — history file list. */
+export function BackIcon({ size }: IconProps): ReactNode {
+  return svg(size, `<path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>`)
+}
+
+/** 📄 File — history log entry. */
+export function FileIcon({ size }: IconProps): ReactNode {
+  return svg(size, `<path d="M6 2c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6H6zm7 7V3.5L18.5 9H13z" fill="currentColor" opacity="0.9"/>`)
+}
+
+/** ⟳ Refresh — reload file list. */
+export function RefreshIcon({ size }: IconProps): ReactNode {
+  return svg(size, `<path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/>`)
+}
+
 /** ▾ Chevron down — tree expand. */
 export function ChevronDownIcon({ size }: IconProps): ReactNode {
   return svg(size, `<path d="M7 10l5 5 5-5z" fill="currentColor"/>`)

@@ -8,7 +8,8 @@
 
 import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, createWriteStream } from 'node:fs'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { WebSocket, type WebSocket as WsType } from 'ws'
 import type { RunConfig, RunConfigType } from './configStore.ts'
@@ -296,7 +297,9 @@ export interface RunInstance {
 
 /** One log entry buffered in the ring buffer. */
 export interface LogEntry {
-  stream: 'stdout' | 'stderr'
+  /** `stdout`/`stderr` carry process output; `meta` lines are host-authored
+   *  (start command, exit summary) and also persisted. */
+  stream: 'stdout' | 'stderr' | 'meta'
   text: string
   ts: number
 }
@@ -317,6 +320,27 @@ interface ManagedProcess {
   exitTimer: ReturnType<typeof setTimeout> | null
   /** Streaming UTF-8 decoder (keeps multi-byte chars intact across chunks). */
   utf8Decoder: TextDecoder
+  /** Persistent log file path (`.dsh/logs/...log`); undefined when disabled. */
+  logPath?: string
+  /** Open write stream for the persistent log file. */
+  logStream?: import('node:fs').WriteStream
+}
+
+/** Escape characters that are unsafe in Windows file names. */
+function safeFileName(s: string): string {
+  return s.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\s+/g, '_').slice(0, 60)
+}
+
+/** Build the persistent log file path for one run. */
+function logFilePath(logsRoot: string, config: RunConfig, id: string): string {
+  const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14)
+  const name = safeFileName(config.name)
+  return join(logsRoot, '.dsh', 'logs', `${name}_${ts}_${id.slice(0, 8)}.log`)
+}
+
+/** Serialize one log entry into the persistent JSONL format. */
+function serializeLogEntry(entry: LogEntry): string {
+  return JSON.stringify({ ts: entry.ts, stream: entry.stream, text: entry.text }) + '\n'
 }
 
 /** Decode one output chunk: streaming UTF-8 (no split-char artifacts), with a
@@ -344,8 +368,10 @@ function decodeChunk(decoder: TextDecoder, chunk: Buffer): string {
 export class ProcessManager {
   private readonly processes = new Map<string, ManagedProcess>()
 
-  /** Spawn a config as a child process. Returns the new RunInstance. */
-  spawnConfig(config: RunConfig, resolvedCwd: string, globalEnv: Record<string, string> = {}): RunInstance {
+  /** Spawn a config as a child process. Returns the new RunInstance.
+   *  `logsRoot` is the workspace root used for the persistent `.dsh/logs`
+   *  directory; omitted → falls back to `resolvedCwd`. */
+  spawnConfig(config: RunConfig, resolvedCwd: string, globalEnv: Record<string, string> = {}, logsRoot?: string): RunInstance {
     const id = randomUUID()
     const now = Date.now()
 
@@ -402,6 +428,20 @@ export class ProcessManager {
       exitTimer: null,
       utf8Decoder: new TextDecoder('utf-8'),
     }
+
+    // Permanent log persistence: every run (including spawn failures) writes
+    // JSONL to <logsRoot>/.dsh/logs/<Name>_<ts>_<id8>.log so previous runs'
+    // output is always recoverable, even after the in-memory ring buffer is
+    // dropped and the instance row is gone.
+    try {
+      const root = logsRoot ?? resolvedCwd
+      managed.logPath = logFilePath(root, config, id)
+      mkdirSync(join(root, '.dsh', 'logs'), { recursive: true })
+      const stream = createWriteStream(managed.logPath, { flags: 'a', encoding: 'utf8' })
+      stream.on('error', () => { /* best-effort persistence */ })
+      managed.logStream = stream
+      this.appendLog(managed, 'meta', `[run] 启动命令: ${finalCommand}\n`)
+    } catch { /* persistence failure must never break spawning */ }
 
     let child: ReturnType<typeof spawn>
     try {
@@ -513,7 +553,7 @@ export class ProcessManager {
   }
 
   /** Append a log entry to the ring buffer and fan out to subscribers. */
-  private appendLog(managed: ManagedProcess, stream: 'stdout' | 'stderr', text: string): void {
+  private appendLog(managed: ManagedProcess, stream: 'stdout' | 'stderr' | 'meta', text: string): void {
     const entry: LogEntry = { stream, text, ts: Date.now() }
     managed.logs.push(entry)
     managed.logChars += text.length
@@ -522,6 +562,10 @@ export class ProcessManager {
       const dropped = managed.logs.shift()
       if (dropped !== undefined) managed.logChars -= dropped.text.length
     }
+    // Persistent copy (best-effort; the stream survives the ring buffer).
+    try {
+      managed.logStream?.write(serializeLogEntry(entry))
+    } catch { /* ignore write failures */ }
     // Fan out to subscribers.
     const msg = JSON.stringify({ type: 'log', entry })
     for (const ws of managed.subscribers) {
@@ -537,6 +581,13 @@ export class ProcessManager {
     managed.instance.status = status
     managed.instance.exitedAt = Date.now()
     managed.instance.exitCode = exitCode
+
+    this.appendLog(managed, 'meta', `[run] 进程退出: ${status} exitCode=${exitCode ?? ''}\n`)
+
+    // Flush + close the persistent log shortly after so residual writes land.
+    setTimeout(() => {
+      try { managed.logStream?.end() } catch { /* already closed */ }
+    }, 1500)
 
     const msg = JSON.stringify({ type: 'status', status, exitCode })
     for (const ws of managed.subscribers) {
@@ -577,4 +628,74 @@ export class ProcessManager {
     }
     this.processes.clear()
   }
+}
+
+// ---- Persistent log history (read side) ----
+
+/** One persisted run-log file. */
+export interface LogFileInfo {
+  /** Absolute path of the .log file. */
+  file: string
+  /** Display name derived from the file name (config name + run stamp). */
+  name: string
+  mtime: number
+  size: number
+}
+
+const LOG_STAMP_RE = /_(\d{14})_[0-9a-f]{8}\.log$/i
+
+/** List persisted log files under a workspace's `.dsh/logs` directory,
+ *  newest first. Files whose name did not match the run stamp still appear. */
+export async function listLogFiles(workspace: string, cap = 300): Promise<LogFileInfo[]> {
+  const dir = join(workspace, '.dsh', 'logs')
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return []
+  }
+  const files: LogFileInfo[] = []
+  for (const n of names) {
+    if (!n.endsWith('.log')) continue
+    const full = join(dir, n)
+    try {
+      const s = await stat(full)
+      files.push({ file: full, name: displayLogName(n), mtime: s.mtimeMs, size: s.size })
+    } catch { /* skip unreadable */ }
+  }
+  files.sort((a, b) => b.mtime - a.mtime)
+  return files.slice(0, cap)
+}
+
+/** Strip the run stamp from a log file name for display. */
+function displayLogName(fileName: string): string {
+  return fileName.replace(LOG_STAMP_RE, '')
+}
+
+/** Parse one persisted JSONL log file into LogEntry[]. Reading is bounded to
+ *  the most recent `tail` lines (cheap line scan from the end). */
+export async function readLogFile(filePath: string, tail = 5000): Promise<LogEntry[]> {
+  let raw: string
+  try {
+    raw = await readFile(filePath, 'utf8')
+  } catch {
+    return []
+  }
+  const lines = raw.split('\n')
+  let start = 0
+  if (lines.length > tail) start = lines.length - tail
+  const out: LogEntry[] = []
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    try {
+      const parsed = JSON.parse(line) as { ts?: unknown; stream?: unknown; text?: unknown }
+      if (typeof parsed.ts !== 'number' || typeof parsed.text !== 'string') continue
+      const stream = parsed.stream === 'stdout' || parsed.stream === 'stderr' || parsed.stream === 'meta'
+        ? parsed.stream as LogEntry['stream']
+        : 'stdout'
+      out.push({ stream, text: parsed.text, ts: parsed.ts })
+    } catch { /* skip non-JSON line (partial write) */ }
+  }
+  return out
 }

@@ -11,6 +11,12 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, basename, sep, normalize, isAbsolute } from 'node:path'
+import {
+  findClassInJars,
+  findClassInUserRepos,
+  walkJars,
+  decompileClassToFile,
+} from './decompiler.ts'
 
 /** Input of a locate request (at least one of className/file is required). */
 export interface LocateRequest {
@@ -26,10 +32,12 @@ export interface LocateRequest {
 /** Output of a locate request. */
 export interface LocateResult {
   ok: boolean
-  /** Absolute path of the matched source file. */
+  /** Absolute path of the matched source file (.java, or decompiled output). */
   path?: string
   /** 1-based resolved line (from the request or method scan). */
   line?: number
+  /** When true the path is decompiled bytecode, not an original source file. */
+  decompiled?: boolean
   reason?: string
 }
 
@@ -44,6 +52,14 @@ const MAX_DEPTH = 22
 const MAX_FILES = 30000
 const MAX_DIRS = 10000
 const JAVA_EXT = '.java'
+
+/** How long a directory-walk result is reused before a refresh (ms). */
+const WALK_TTL_MS = 60_000
+
+/** Directories skipped while scanning bytecode: unlike the .java walk, we
+ *  KEEP build output dirs (target/classes, build/classes, out, bin) because
+ *  compiled classes live there. */
+const SKIP_CLASS_DIRS = new Set([...SKIP_DIRS].filter((d) => !['target', 'build', 'out', 'bin', 'obj'].includes(d)))
 
 /** Escape a string for use inside a RegExp. */
 function escapeRe(s: string): string {
@@ -110,6 +126,48 @@ async function walkJavaFiles(base: string): Promise<string[]> {
     }
   }
   return out
+}
+
+// ---- Walk caches ----
+// A single locate click walks the whole source tree (and possibly the class
+// tree) several times; large projects take seconds per walk. Reuse results
+// within a short TTL — the log-click locate flow runs in bursts, and source
+// edits are rare mid-session. Concurrent callers share the in-flight walk.
+
+interface WalkCacheEntry<T> {
+  ts: number
+  files: T | null
+  inflight: Promise<T> | null
+}
+
+const javaWalkCache = new Map<string, WalkCacheEntry<string[]>>()
+const classWalkCache = new Map<string, WalkCacheEntry<string[]>>()
+
+function cachedWalk<T>(cache: Map<string, WalkCacheEntry<T>>, base: string, doWalk: () => Promise<T>): Promise<T> {
+  const now = Date.now()
+  const entry = cache.get(base)
+  if (entry !== undefined && entry.files !== null && now - entry.ts < WALK_TTL_MS) {
+    return Promise.resolve(entry.files)
+  }
+  if (entry !== undefined && entry.inflight !== null) {
+    return entry.inflight
+  }
+  const p = doWalk().then((files) => {
+    cache.set(base, { ts: Date.now(), files, inflight: null })
+    return files
+  })
+  cache.set(base, { ts: now, files: null, inflight: p })
+  return p
+}
+
+function walkJavaFilesCached(base: string): Promise<string[]> {
+  return cachedWalk<string[]>(javaWalkCache, base, () => walkJavaFiles(base))
+}
+
+/** Bounded walk collecting all .class paths. Waits for cache entry via the
+ *  general cachedWalk helper (the walk itself is defined below). */
+function walkClassFilesCached(base: string): Promise<string[]> {
+  return cachedWalk<string[]>(classWalkCache, base, () => walkClassFiles(base))
 }
 
 /** Score a candidate file for a class name: src-root bonus + longest
@@ -179,6 +237,135 @@ async function resolveLine(path: string, method: string | undefined, line: numbe
   }
 }
 
+/** Bounded walk collecting all .class paths (build output dirs kept). */
+async function walkClassFiles(base: string, cap = 20000): Promise<string[]> {
+  const out: string[] = []
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: base, depth: 0 }]
+  let dirsSeen = 0
+  while (stack.length > 0 && out.length < cap) {
+    const { dir, depth } = stack.pop()!
+    if (dirsSeen >= MAX_DIRS) break
+    dirsSeen++
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        if (depth < MAX_DEPTH && !SKIP_CLASS_DIRS.has(entry.name)) {
+          stack.push({ dir: full, depth: depth + 1 })
+        }
+      } else if (entry.isFile() && entry.name.endsWith('.class')) {
+        out.push(full)
+        if (out.length >= cap) return out
+      }
+    }
+  }
+  return out
+}
+
+/** Common compiled-output roots under a base directory. */
+function bytecodeRoots(base: string): string[] {
+  return [
+    join(base, 'target', 'classes'),
+    join(base, 'build', 'classes', 'java', 'main'),
+    join(base, 'build', 'classes'),
+    join(base, 'out'),
+    join(base, 'bin'),
+  ]
+}
+
+/** Locate a .class file for a class name inside one base directory. */
+async function findClassBytecode(base: string, className: string): Promise<string | undefined> {
+  const pkgSegs = className.split('.')
+  const simpleName = pkgSegs[pkgSegs.length - 1]
+  const rel = `${pkgSegs.join('/')}.class`
+  for (const root of bytecodeRoots(base)) {
+    const candidate = join(root, rel)
+    if (await exists(candidate)) return candidate
+  }
+  // Walk, filtered by the trailing simple class name (handles weird layouts).
+  const classes = await walkClassFilesCached(base)
+  const wanted = `${simpleName}.class`
+  for (const c of classes) {
+    if (basename(c) === wanted) return c
+  }
+  return undefined
+}
+
+/** Deduplicate an array of absolute paths preserving order. */
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of paths) {
+    if (!seen.has(p)) {
+      seen.add(p)
+      out.push(p)
+    }
+  }
+  return out
+}
+
+/**
+ * Decompile fallback: no `.java` source was found, so resolve the class
+ * bytecode (compiled output → project dependency jars → user-local Maven /
+ * Gradle repo), decompile it with CFR and return the generated .java path.
+ */
+async function locateByBytecode(
+  workspace: string,
+  bases: string[],
+  className: string,
+  method: string | undefined,
+  line: number | undefined,
+): Promise<LocateResult> {
+  const pkgSegs = className.split('.')
+  const simpleName = pkgSegs[pkgSegs.length - 1]
+  const rel = `${pkgSegs.join('/')}.class`
+
+  // JDK built-in packages are never in the workspace or local repos; a
+  // lookup can only burn seconds scanning for nothing. Fail fast with a
+  // clear message for the common java.*/javax.*/jdk.*/sun.* stack frames.
+  const first = pkgSegs[0] ?? ''
+  if (
+    first === 'java' || first === 'javax' || first === 'jdk' || first === 'sun' ||
+    first === 'com.sun' || first === 'org.w3c' || first === 'org.xml' || first === 'groovy'
+  ) {
+    return { ok: false, reason: `${simpleName} 是 JDK/内置包类，无项目内源码` }
+  }
+
+  // 1) Compiled output inside the search bases.
+  for (const base of bases) {
+    const classPath = await findClassBytecode(base, className)
+    if (classPath !== undefined) {
+      const out = await decompileClassToFile(workspace, rel, { kind: 'file', path: classPath })
+      if (out !== null) return { ok: true, path: out, decompiled: true, line: await resolveLine(out, method, line) }
+    }
+  }
+
+  // 2) Dependency jars inside the search bases (target/*.jar, lib/*.jar, …).
+  const jars: string[] = []
+  for (const base of bases) jars.push(...await walkJars(base, { depth: 8, cap: 1000 }))
+  const hit = await findClassInJars(uniquePaths(jars), rel)
+  if (hit !== null) {
+    const out = await decompileClassToFile(workspace, rel, { kind: 'jar', jar: hit.jar, bytes: hit.bytes })
+    if (out !== null) return { ok: true, path: out, decompiled: true, line: await resolveLine(out, method, line) }
+  }
+
+  // 3) The user-global Maven / Gradle repository (may take a moment on the
+  //    first lookup, then it is cached for the host session).
+  const repoHit = await findClassInUserRepos(rel)
+  if (repoHit !== null) {
+    const out = await decompileClassToFile(workspace, rel, { kind: 'jar', jar: repoHit.jar, bytes: repoHit.bytes })
+    if (out !== null) return { ok: true, path: out, decompiled: true, line: await resolveLine(out, method, line) }
+  }
+
+  return { ok: false, reason: `未找到 ${simpleName} 的源码或字节码（工作空间与本地仓库均无）` }
+}
+
 /** Search one base directory for a class file: exact package path first,
  *  then a bounded walk filtered by the trailing simple class name. */
 async function findClassFile(base: string, className: string): Promise<string | undefined> {
@@ -194,7 +381,7 @@ async function findClassFile(base: string, className: string): Promise<string | 
   }
 
   // 2) Bounded scan, filtered by file name, scored by package overlap.
-  const files = await walkJavaFiles(base)
+  const files = await walkJavaFilesCached(base)
   let best: { path: string; score: number } | null = null
   for (const f of files) {
     if (basename(f) !== `${simpleName}${JAVA_EXT}`) continue
@@ -223,16 +410,16 @@ export async function locateSource(workspace: string, req: LocateRequest): Promi
       }
     }
     if (pkgSegs.length > 1 && pkgSegs.some((s) => s.length <= 1)) {
-      const simpleName = pkgSegs[pkgSegs.length - 1]
-      return { ok: false, reason: `未找到 ${simpleName}.java（类名含缩写包名，已按文件名匹配）` }
+      // Abbreviation handled by file-name matching above; fall through to
+      // bytecode resolution using the trailing simple class name.
     }
-    return { ok: false, reason: `未找到 ${className} 的源文件（可能在依赖 jar 中）` }
+    return await locateByBytecode(workspace, bases, className, method, line)
   }
 
   // File-name lookup (stack frame without a resolvable FQCN, or (Foo.java:45)).
   if (file !== undefined) {
     for (const base of bases) {
-      const files = await walkJavaFiles(base)
+      const files = await walkJavaFilesCached(base)
       let best: { path: string; score: number } | null = null
       for (const f of files) {
         if (basename(f) !== file) continue
@@ -243,7 +430,19 @@ export async function locateSource(workspace: string, req: LocateRequest): Promi
         return { ok: true, path: best.path, line: await resolveLine(best.path, method, line) }
       }
     }
-    return { ok: false, reason: `未找到 ${file} 源文件` }
+    // No source: try decompiling the matching compiled class (file name only,
+    // no package context — matches the simple class name in build output).
+    const clsBase = file.replace(/\.java$/i, '')
+    for (const base of bases) {
+      const classes = await walkClassFilesCached(base)
+      for (const c of classes) {
+        if (basename(c) !== `${clsBase}.class`) continue
+        const rel = relative(base, c).split(sep).join('/')
+        const out = await decompileClassToFile(workspace, rel, { kind: 'file', path: c })
+        if (out !== null) return { ok: true, path: out, decompiled: true, line: await resolveLine(out, method, line) }
+      }
+    }
+    return { ok: false, reason: `未找到 ${file} 源文件（也无对应字节码）` }
   }
 
   return { ok: false, reason: '缺少 className 或 file' }

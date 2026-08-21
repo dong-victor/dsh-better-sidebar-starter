@@ -48,9 +48,10 @@ export interface RunInstance {
   exitCode: number | null
 }
 
-/** One log entry. */
+/** One log entry. `meta` lines are host-authored (start/exit summary) and
+ *  are only rendered in persisted history views. */
 export interface LogEntry {
-  stream: 'stdout' | 'stderr'
+  stream: 'stdout' | 'stderr' | 'meta'
   text: string
   ts: number
 }

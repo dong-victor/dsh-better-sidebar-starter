@@ -16,7 +16,7 @@ import type { PluginContext } from './context.ts'
 import { isTrustedApiRequest } from './fence.ts'
 import { createSessionGate, sessionCwdOf } from './gate.ts'
 import { readConfigs, upsertConfig, deleteConfig, stampLastRun, type RunConfig } from './configStore.ts'
-import { ProcessManager, type RunInstance } from './processManager.ts'
+import { ProcessManager, listLogFiles, readLogFile, type RunInstance } from './processManager.ts'
 import { locateSource } from './sourceLocator.ts'
 
 /** Route family base. */
@@ -28,6 +28,7 @@ export const STARTER_API = {
   logsWs: '/api/dsh-better-sidebar-starter/logs',
   detectEnv: '/api/dsh-better-sidebar-starter/detect-env',
   locateSource: '/api/dsh-better-sidebar-starter/locate-source',
+  logsHistory: '/api/dsh-better-sidebar-starter/logs-history',
 }
 /** Cap on JSON request bodies. */
 const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
@@ -230,6 +231,37 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
         writeJson(res, 200, { instances: kernels.listInstances() })
       },
     },
+    // --------------------------------------------------- logs-history GET
+    // Persistent run logs (survive instance cleanup & spawn failures):
+    //   ?list=1            → list .dsh/logs/*.log under the session cwd
+    //   ?file=<abs path>   → read a single persisted log (must be inside cwd)
+    {
+      kind: 'exact',
+      path: STARTER_API.logsHistory,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const cwd = await resolveCwd(url, res)
+        if (cwd === null) return
+        const fileParam = queryParam(url, 'file')
+        if (fileParam === undefined || fileParam === '') {
+          // List mode.
+          const logs = await listLogFiles(cwd)
+          writeJson(res, 200, { logs })
+          return
+        }
+        // Read mode — gate: the file must be inside the session cwd.
+        const { isAbsolute, normalize, relative, sep, join } = await import('node:path')
+        const abs = isAbsolute(fileParam) ? normalize(fileParam) : normalize(join(cwd, fileParam))
+        const rel = relative(cwd, abs)
+        if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+          writeJson(res, 403, { error: 'file must be inside the session workspace' })
+          return
+        }
+        const logs = await readLogFile(abs)
+        writeJson(res, 200, { file: abs, logs })
+      },
+    },
     // --------------------------------------------------------- run POST
     {
       kind: 'exact',
@@ -269,7 +301,7 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
         const globalEnv = typeof body.globalEnv === 'object' && body.globalEnv !== null
           ? body.globalEnv as Record<string, string>
           : {}
-        const instance = kernels.spawnConfig(config, verdict.canonical, globalEnv)
+        const instance = kernels.spawnConfig(config, verdict.canonical, globalEnv, cwd)
         writeJson(res, 200, { instance })
       },
     },

@@ -12,14 +12,16 @@ import type { PluginContext } from './host/context.ts'
 import { ProcessManager } from './host/processManager.ts'
 import { isTrustedApiRequest } from './host/fence.ts'
 import { makeRoutes } from './host/routes.ts'
+import { registerAgentTools } from './host/agentTools.ts'
 
 /** Plugin identity for cordis.yml rows / the bundle patch. */
 export const name = 'dsh-better-sidebar-starter'
 
 /** Services required before mounting: the webserver routes, the session
- *  store (authoritative cwd for the path gate), and the web runtime's
- *  trusted hosts (the /api gateway's trust source). */
-export const inject = ['webServer', 'sessions', 'webRuntime']
+ *  store (authoritative cwd for the path gate), the web runtime's
+ *  trusted hosts (the /api gateway's trust source), and — for the chat-side
+ *  service tools — the agent tool registry and the system-prompt service. */
+export const inject = ['webServer', 'sessions', 'webRuntime', 'tools', 'systemPrompt']
 
 /** Plugin body: mount the fenced starter routes and the process lifecycle. */
 export function apply(ctx: PluginContext): void {
@@ -36,6 +38,13 @@ export function apply(ctx: PluginContext): void {
       }
     }
   }, 'dsh-better-sidebar-starter: routes')
+
+  ctx.effect(() => {
+    const disposeTools = registerAgentTools(ctx, kernels)
+    return () => {
+      try { disposeTools() } catch { /* already disposed */ }
+    }
+  }, 'dsh-better-sidebar-starter: agent tools')
 
   ctx.effect(() => () => {
     kernels.dispose()

@@ -37,15 +37,88 @@ export interface LogViewProps {
 }
 
 /** One rendered log line. */
-interface LogLine {
+export interface LogLine {
   entries: LogEntry[]
   key: number
+}
+
+/** Structural face of ctx.betterSidebar (openFile only). */
+interface BetterSidebarLike {
+  openFile(scope: { sessionId: string; cwd?: string }, path: string, title?: string): void
+}
+
+/** Open the source behind a log token via the locate-source API. Shared by the
+ *  live LogView and the persisted LogHistoryView. `root` is the locating root
+ *  (live instance cwd, or the session workspace for history logs). */
+export async function handleLogCodeClick(
+  ctx: Context,
+  sessionId: string,
+  cwd: string | undefined,
+  root: string | undefined,
+  link: LogCodeLink,
+): Promise<void> {
+  const payload: Record<string, unknown> = {}
+  if (root !== undefined && root !== '') payload.root = root
+  if (link.kind === 'class' || link.kind === 'frame') payload.className = link.className
+  if (link.file !== undefined) payload.file = link.file
+  if (link.method !== undefined && link.method !== '<init>' && link.method !== '<clinit>') payload.method = link.method
+  if (link.line !== undefined) payload.line = link.line
+  try {
+    // The host resolves the session cwd from the query — sessionId is required.
+    const params = new URLSearchParams({ sessionId })
+    if (cwd !== undefined && cwd !== '') params.set('cwd', cwd)
+    const resp = await fetch(`${API_BASE}/locate-source?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!resp.ok) {
+      // Surface the host's error message (e.g. missing sessionId) instead
+      // of a generic failure.
+      let reason = '定位源码失败'
+      try {
+        const err = await resp.json() as { error?: string }
+        if (typeof err.error === 'string' && err.error !== '') reason = err.error
+      } catch { /* non-JSON error body — keep generic message */ }
+      showToast(reason, false)
+      return
+    }
+    const data = await resp.json() as { ok: boolean; path?: string; line?: number; decompiled?: boolean; reason?: string }
+    if (data.ok !== true || typeof data.path !== 'string') {
+      showToast(data.reason ?? '未找到源文件', false)
+      return
+    }
+    const base = data.path.split(/[\\/]/).pop() ?? data.path
+    const line = typeof data.line === 'number' ? data.line : undefined
+    const decompiled = data.decompiled === true
+    const badge = decompiled ? ' [反编译]' : ''
+    const title = line !== undefined ? `${base} : ${line}${badge}` : `${base}${badge}`
+    const betterSidebar = (ctx as { betterSidebar?: BetterSidebarLike }).betterSidebar
+    // Open in the session's sidebar editor.
+    if (betterSidebar !== undefined) {
+      betterSidebar.openFile({ sessionId, cwd }, data.path, title)
+    }
+    // Copy "File.java:line" so the user can jump in an unsupported editor.
+    try {
+      void navigator.clipboard?.writeText(`${base}${line !== undefined ? `:${line}` : ''}`)
+    } catch { /* clipboard unavailable — ignore */ }
+    showToast(
+      line !== undefined
+        ? `已打开 ${base}，定位到第 ${line} 行（已复制 ${base}:${line}）${decompiled ? '（反编译产物）' : ''}`
+        : decompiled
+          ? `已打开反编译产物 ${base}`
+          : `已打开 ${base}`,
+      true,
+    )
+  } catch {
+    showToast('定位源码失败', false)
+  }
 }
 
 /** Render ANSI-colored text segments, applying Java-log syntax highlighting
  *  to text the program did not color itself (ANSI-colored spans keep the
  *  program's own colors). Tokens with a source link become clickable. */
-function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link: LogCodeLink) => void): ReactNode {
+export function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link: LogCodeLink) => void): ReactNode {
   const segments = parseAnsi(text)
   const nodes: ReactNode[] = []
   let hlCounter = 0
@@ -123,61 +196,6 @@ export function LogView({ instance, ctx, sessionId, cwd, onStop, onRestart }: Lo
       showToast(`已将选中文本（${text.length} 字符）发送到对话`, true)
     } else {
       showToast('发送失败：对话服务不可用', false)
-    }
-  }
-
-  /** Open the source file behind a highlighted class / frame / location token. */
-  const handleCodeClick = async (link: LogCodeLink): Promise<void> => {
-    const payload: Record<string, unknown> = { root: instance.cwd }
-    if (link.kind === 'class' || link.kind === 'frame') payload.className = link.className
-    if (link.file !== undefined) payload.file = link.file
-    if (link.method !== undefined && link.method !== '<init>' && link.method !== '<clinit>') payload.method = link.method
-    if (link.line !== undefined) payload.line = link.line
-    try {
-      // The host resolves the session cwd from the query — sessionId is required.
-      const params = new URLSearchParams({ sessionId })
-      if (cwd !== undefined && cwd !== '') params.set('cwd', cwd)
-      const resp = await fetch(`${API_BASE}/locate-source?${params.toString()}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (!resp.ok) {
-        // Surface the host's error message (e.g. missing sessionId) instead
-        // of a generic failure.
-        let reason = '定位源码失败'
-        try {
-          const err = await resp.json() as { error?: string }
-          if (typeof err.error === 'string' && err.error !== '') reason = err.error
-        } catch { /* non-JSON error body — keep generic message */ }
-        showToast(reason, false)
-        return
-      }
-      const data = await resp.json() as { ok: boolean; path?: string; line?: number; reason?: string }
-      if (data.ok !== true || typeof data.path !== 'string') {
-        showToast(data.reason ?? '未找到源文件', false)
-        return
-      }
-      const base = data.path.split(/[\\/]/).pop() ?? data.path
-      const line = typeof data.line === 'number' ? data.line : undefined
-      const title = line !== undefined ? `${base} : ${line}` : base
-      const betterSidebar = (ctx as { betterSidebar?: BetterSidebarLike }).betterSidebar
-      // Open in the session's sidebar editor.
-      if (betterSidebar !== undefined) {
-        betterSidebar.openFile({ sessionId, cwd }, data.path, title)
-      }
-      // Copy "File.java:line" so the user can jump in an unsupported editor.
-      try {
-        void navigator.clipboard?.writeText(`${base}${line !== undefined ? `:${line}` : ''}`)
-      } catch { /* clipboard unavailable — ignore */ }
-      showToast(
-        line !== undefined
-          ? `已打开 ${base}，定位到第 ${line} 行（已复制 ${base}:${line}）`
-          : `已打开 ${base}`,
-        true,
-      )
-    } catch {
-      showToast('定位源码失败', false)
     }
   }
 
@@ -311,7 +329,7 @@ export function LogView({ instance, ctx, sessionId, cwd, onStop, onRestart }: Lo
             return createElement('span', {
               key: segKey,
               className: entry.stream === 'stderr' ? 'sts-log-stderr' : '',
-            }, renderAnsiLine(entry.text, segKey, (link) => { void handleCodeClick(link) }))
+            }, renderAnsiLine(entry.text, segKey, (link) => { void handleLogCodeClick(ctx, sessionId, cwd, instance.cwd, link) }))
           }),
         )
       }),

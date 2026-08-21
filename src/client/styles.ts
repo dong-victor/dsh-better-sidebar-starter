@@ -53,6 +53,43 @@ export const STYLES_CSS = `
   border-color: var(--dsw-alias-border-l3, #3a3a3e);
   color: var(--dsw-alias-label-primary, #e6e6e6);
 }
+.sts-toolbar-btn.active {
+  background: var(--dsw-alias-interactive-bg-active, rgba(0,122,204,0.18));
+  border-color: var(--dsw-alias-brand, #007acc);
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+}
+
+/* ===== Log history viewer ===== */
+.sts-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 8px);
+  margin: 2px 4px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #b0b0b0);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+.sts-history-item:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.06));
+  border-color: var(--dsw-alias-border-l2, #2a2a2e);
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+}
+.sts-history-item-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.55;
+}
+.sts-log-meta {
+  opacity: 0.72;
+  font-style: italic;
+}
 
 /* ===== Split pane (horizontal: default for right panel) ===== */
 .sts-split {

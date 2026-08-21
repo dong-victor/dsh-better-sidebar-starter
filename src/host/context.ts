@@ -45,6 +45,36 @@ export interface PluginWebServer {
   registerUpgrade(route: PluginWebUpgradeRoute): () => void
 }
 
+/**
+ * Structural face of `@deepseek-ai/dsh-tools` tool definitions. The host only
+ * reads these properties (schema + execute + render), so a plain object
+ * literal satisfies it — same approach dsh-mcphub takes for its bridged
+ * tools — and the plugin needs no runtime dependency on dsh-tools.
+ */
+export interface PluginToolDefinition {
+  name: string
+  description: string
+  /** Full JSON Schema for the tool arguments (object root). */
+  parameters: Record<string, unknown>
+  output: {
+    /** JSON Schema for the canonical return value. */
+    schema: Record<string, unknown>
+    /** Pure projection from args + value to model-facing content blocks. */
+    render(args: unknown, value: unknown): Array<{ type: 'text'; text: string }>
+  }
+  execute(args: Record<string, unknown>, exec?: { signal?: AbortSignal }): Promise<unknown>
+}
+
+/** The cordis `tools` service face: register returns a disposer. */
+export interface PluginToolRuntime {
+  register(def: PluginToolDefinition): () => void
+}
+
+/** One system-prompt section registration (returns a disposer). */
+export interface PluginSystemPrompt {
+  section(opts: { name: string; order: number; text: () => string }): () => void
+}
+
 /** The host context face this plugin's host half reads. */
 export interface PluginContext {
   webServer: PluginWebServer
@@ -53,4 +83,10 @@ export interface PluginContext {
   /** Register a lifecycle callback (DSH-vendored cordis): runs at plugin
    *  activation; its returned cleanup runs at disposal. */
   effect(fn: () => void | (() => void), label?: string): void
+  /** Structural `tools` service (may be absent on very old hosts). */
+  tools?: PluginToolRuntime
+  /** Structural system-prompt service (may be absent on very old hosts). */
+  systemPrompt?: PluginSystemPrompt
+  /** cordis logger. */
+  log?: { info(...args: unknown[]): void; warn(...args: unknown[]): void; error(...args: unknown[]): void }
 }
