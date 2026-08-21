@@ -10,6 +10,7 @@ import type { Context } from 'cordis'
 import type { LogEntry, RunInstance } from './types.ts'
 import type { WsMessage } from './types.ts'
 import { parseAnsi, segmentFgColor, segmentBgColor, type AnsiSegment } from './ansi.ts'
+import { highlightLogText } from './logHighlight.ts'
 import { StopIcon, RestartIcon, TrashIcon, SendToChatIcon } from './icons.tsx'
 import { appendToDraft } from './conversationDraft.ts'
 import { showToast } from './utils.ts'
@@ -31,21 +32,42 @@ interface LogLine {
   key: number
 }
 
-/** Render ANSI-colored text segments. */
+/** Render ANSI-colored text segments, applying Java-log syntax highlighting
+ *  to text the program did not color itself (ANSI-colored spans keep the
+ *  program's own colors). */
 function renderAnsiLine(text: string, keyBase: string): ReactNode {
   const segments = parseAnsi(text)
-  return segments.map((seg: AnsiSegment, i: number) => {
-    const style: Record<string, string> = {}
+  const nodes: ReactNode[] = []
+  let hlCounter = 0
+  for (let i = 0; i < segments.length; i++) {
+    const seg: AnsiSegment = segments[i]
     const fg = segmentFgColor(seg)
     const bg = segmentBgColor(seg)
-    if (fg !== null) style.color = fg
-    if (bg !== null) style.backgroundColor = bg
-    if (seg.bold) style.fontWeight = 'bold'
-    if (seg.dim) style.opacity = '0.6'
-    if (seg.italic) style.fontStyle = 'italic'
-    if (seg.underline) style.textDecoration = 'underline'
-    return createElement('span', { key: `${keyBase}-${i}`, style }, seg.text)
-  })
+    // Style carried from the ANSI segment (bold/dim/italic/underline).
+    const baseStyle: Record<string, string> = {}
+    if (seg.bold) baseStyle.fontWeight = 'bold'
+    if (seg.dim) baseStyle.opacity = '0.6'
+    if (seg.italic) baseStyle.fontStyle = 'italic'
+    if (seg.underline) baseStyle.textDecoration = 'underline'
+
+    if (fg !== null || bg !== null) {
+      // Program-colored text: keep the raw output as-is.
+      const style: Record<string, string> = { ...baseStyle }
+      if (fg !== null) style.color = fg
+      if (bg !== null) style.backgroundColor = bg
+      nodes.push(createElement('span', { key: `${keyBase}-${i}`, style }, seg.text))
+    } else {
+      // Uncolored text: run the log syntax highlighter.
+      const hl = highlightLogText(seg.text)
+      for (const h of hl) {
+        const style: Record<string, string> = { ...baseStyle }
+        if (h.color !== undefined) style.color = h.color
+        if (h.bold === true) style.fontWeight = 'bold'
+        nodes.push(createElement('span', { key: `${keyBase}-${i}-hl${hlCounter++}`, style }, h.text))
+      }
+    }
+  }
+  return nodes
 }
 
 /** The log view component. */
