@@ -145,51 +145,69 @@ function splitUrlParts(text: string): Array<{ text: string; url?: string }> {
 export function renderAnsiLine(text: string, keyBase: string, onLinkClick: (link: LogCodeLink) => void): ReactNode {
   const segments = parseAnsi(text)
   const nodes: ReactNode[] = []
+  if (segments.length === 0) return nodes
   let hlCounter = 0
-  for (let i = 0; i < segments.length; i++) {
-    const seg: AnsiSegment = segments[i]
-    const fg = segmentFgColor(seg)
-    const bg = segmentBgColor(seg)
-    // Style carried from the ANSI segment (bold/dim/italic/underline).
-    const baseStyle: Record<string, string> = {}
-    if (seg.bold) baseStyle.fontWeight = 'bold'
-    if (seg.dim) baseStyle.opacity = '0.6'
-    if (seg.italic) baseStyle.fontStyle = 'italic'
-    if (seg.underline) baseStyle.textDecoration = 'underline'
 
-    if (fg !== null || bg !== null) {
-      // Program-colored text: keep the raw output as-is.
-      const style: Record<string, string> = { ...baseStyle }
+  // Stitch the whole line into one plain string FIRST: Vite et al. split
+  // their URLs across color runs ("http://ip:" + BOLD "5173" + "/"), so
+  // per-segment detection loses the port. URLs are matched on the full
+  // line, then mapped back onto the styled segments they overlap.
+  let fullText = ''
+  const ranges: Array<{ seg: AnsiSegment; start: number; end: number }> = []
+  for (const seg of segments) {
+    ranges.push({ seg, start: fullText.length, end: fullText.length + seg.text.length })
+    fullText += seg.text
+  }
+
+  const parts = splitUrlParts(fullText)
+  let offset = 0
+  for (const part of parts) {
+    const pStart = offset
+    const pEnd = offset + part.text.length
+    offset = pEnd
+    for (const r of ranges) {
+      const s = Math.max(r.start, pStart)
+      const e = Math.min(r.end, pEnd)
+      if (s >= e) continue
+      const slice = fullText.slice(s, e)
+      const seg = r.seg
+      // Style carried from the ANSI segment (bold/dim/italic/underline).
+      const style: Record<string, string> = {}
+      if (seg.bold) style.fontWeight = 'bold'
+      if (seg.dim) style.opacity = '0.6'
+      if (seg.italic) style.fontStyle = 'italic'
+      if (seg.underline) style.textDecoration = 'underline'
+      const fg = segmentFgColor(seg)
+      const bg = segmentBgColor(seg)
       if (fg !== null) style.color = fg
       if (bg !== null) style.backgroundColor = bg
-      nodes.push(createElement('span', { key: `${keyBase}-${i}`, style }, seg.text))
-    } else {
-      // Uncolored text: URLs become clickable links first, the rest runs
-      // through the log syntax highlighter.
-      for (const part of splitUrlParts(seg.text)) {
-        if (part.url !== undefined) {
-          const url = part.url
-          nodes.push(createElement('span', {
-            key: `${keyBase}-${i}-u${hlCounter++}`,
-            className: 'sts-log-url',
-            style: { ...baseStyle, textDecoration: 'underline', cursor: 'pointer' },
-            title: `在浏览器打开 ${url}`,
-            onClick: (e: MouseEvent) => {
-              e.stopPropagation()
-              try { window.open(url, '_blank', 'noopener') } catch { /* popup blocked */ }
-            },
-          }, part.url))
-          continue
-        }
-        const hl = highlightLogText(part.text)
+
+      if (part.url !== undefined) {
+        const url = part.url
+        nodes.push(createElement('span', {
+          key: `${keyBase}-u${hlCounter++}`,
+          className: 'sts-log-url',
+          style: { ...style, textDecoration: 'underline', cursor: 'pointer' },
+          title: `在浏览器打开 ${url}`,
+          onClick: (e: MouseEvent) => {
+            e.stopPropagation()
+            try { window.open(url, '_blank', 'noopener') } catch { /* popup blocked */ }
+          },
+        }, slice))
+      } else if (fg !== null || bg !== null) {
+        // Program-colored text: keep the ANSI colors as-is.
+        nodes.push(createElement('span', { key: `${keyBase}-c${hlCounter++}`, style }, slice))
+      } else {
+        // Uncolored text runs through the log syntax highlighter.
+        const hl = highlightLogText(slice)
         for (const h of hl) {
-          const style: Record<string, string> = { ...baseStyle }
-          if (h.color !== undefined) style.color = h.color
-          if (h.bold === true) style.fontWeight = 'bold'
+          const hStyle: Record<string, string> = { ...style }
+          if (h.color !== undefined) hStyle.color = h.color
+          if (h.bold === true) hStyle.fontWeight = 'bold'
           nodes.push(createElement('span', {
-            key: `${keyBase}-${i}-hl${hlCounter++}`,
+            key: `${keyBase}-hl${hlCounter++}`,
             className: h.link !== undefined ? 'sts-log-link' : undefined,
-            style,
+            style: hStyle,
             onClick: h.link !== undefined
               ? (e: MouseEvent) => {
                   e.stopPropagation()
