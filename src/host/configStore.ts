@@ -98,7 +98,7 @@ async function writeConfigs(cwd: string, configs: RunConfig[]): Promise<void> {
 }
 
 /** Create a new config or update an existing one (matched by id). */
-export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { name: string }): Promise<RunConfig> {
+export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { name?: string }): Promise<RunConfig> {
   const configs = await readConfigs(cwd)
   const now = Date.now()
 
@@ -108,7 +108,7 @@ export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { na
       const existing = configs[idx]
       const updated: RunConfig = {
         ...existing,
-        name: input.name,
+        name: input.name ?? existing.name,
         type: input.type ?? existing.type,
         command: input.command ?? existing.command,
         cwd: input.cwd ?? existing.cwd,
@@ -126,7 +126,7 @@ export async function upsertConfig(cwd: string, input: Partial<RunConfig> & { na
 
   const config: RunConfig = {
     id: input.id ?? randomUUID(),
-    name: input.name,
+    name: input.name ?? '',
     type: input.type ?? 'custom',
     command: input.command ?? '',
     cwd: input.cwd ?? '.',
