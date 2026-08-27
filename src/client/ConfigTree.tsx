@@ -9,7 +9,7 @@ import type { RunConfig, RunInstance } from './types.ts'
 import {
   PlayIcon, StopIcon, GearIcon, CopyIcon,
   ChevronDownIcon, ChevronRightIcon,
-  RunningDotIcon, CheckIcon, ErrorDotIcon,
+  RunningDotIcon, CheckIcon, ErrorDotIcon, TrashIcon,
   typeIcon,
 } from './icons.tsx'
 
@@ -26,6 +26,8 @@ export interface ConfigTreeProps {
   onEditConfig: (configId: string) => void
   /** Duplicate a config: opens the editor prefilled with all its info under a new name. */
   onDuplicateConfig: (configId: string) => void
+  /** Delete a config (stops its running instances; asks for confirmation in the parent). */
+  onDeleteConfig: (configId: string) => void
 }
 
 /** Type group order. */
@@ -48,7 +50,8 @@ function statusIcon(status: string, size: number): ReactNode {
 /** The config tree component. */
 export function ConfigTree(props: ConfigTreeProps): ReactNode {
   const { configs, instances, selectedInstanceId, selectedConfigId,
-    onSelectConfig, onSelectInstance, onStartConfig, onStopInstance, onEditConfig, onDuplicateConfig } = props
+    onSelectConfig, onSelectInstance, onStartConfig, onStopInstance, onEditConfig, onDuplicateConfig,
+    onDeleteConfig } = props
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
@@ -165,6 +168,14 @@ export function ConfigTree(props: ConfigTreeProps): ReactNode {
                       onDuplicateConfig(config.id)
                     },
                   }, CopyIcon({ size: 12 })),
+                  createElement('button', {
+                    className: 'sts-icon-btn trash',
+                    title: '删除配置',
+                    onClick: (e: MouseEvent) => {
+                      e.stopPropagation()
+                      onDeleteConfig(config.id)
+                    },
+                  }, TrashIcon({ size: 12 })),
                 ),
               ),
             ]

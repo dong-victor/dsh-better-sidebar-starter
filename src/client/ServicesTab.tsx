@@ -244,6 +244,8 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
 
   /** Delete a config. */
   const handleDeleteConfig = useCallback(async (configId: string): Promise<void> => {
+    const target = configs.find((c) => c.id === configId)
+    if (!globalThis.confirm(`确定删除配置「${target?.name ?? configId}」？运行中的实例将被一并停止。`)) return
     // Stop any running instances first.
     for (const inst of instances) {
       if (inst.configId === configId && inst.status === 'running') {
@@ -260,7 +262,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
         void fetchInstances()
       }
     } catch { /* ignore */ }
-  }, [instances, handleStop, sessionQuery, fetchConfigs, fetchInstances, selectedConfigId])
+  }, [configs, instances, handleStop, sessionQuery, fetchConfigs, fetchInstances, selectedConfigId])
 
   /** Select a config (deselect any instance). */
   const handleSelectConfig = (configId: string): void => {
@@ -344,6 +346,7 @@ export function ServicesTab(props: TabComponentProps): ReactNode {
               onStopInstance: (id: string) => { void handleStop(id) },
               onEditConfig: handleEditConfig,
               onDuplicateConfig: handleDuplicateConfig,
+              onDeleteConfig: (id: string) => { void handleDeleteConfig(id) },
             }),
       ),
       // Gutter
