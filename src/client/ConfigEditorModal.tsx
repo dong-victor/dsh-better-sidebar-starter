@@ -9,36 +9,8 @@ import { createElement, useState, useEffect, type ReactNode } from 'react'
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import { CloseIcon, PlusIcon, TrashIcon, ChevronRightIcon, FolderIcon, ClipboardIcon } from './icons.tsx'
 import { PathPicker } from './PathPicker.tsx'
-
-/** One directory entry from the sidebar fs.tree API. */
-interface FsEntry {
-  name: string
-  path: string
-  isDir: boolean
-  hidden: boolean
-  isSymlink: boolean
-  broken: boolean
-}
-
-/** Call the sidebar fs.tree API directly via fetch. Returns directories only.
- *  If path is omitted, the server uses the session cwd (root listing).
- *  The sidebar API wraps responses in { ok: true, value: ... } envelope. */
-async function fsTree(scope: SessionScope, path?: string): Promise<FsEntry[]> {
-  const payload: Record<string, string> = { sessionId: scope.sessionId }
-  if (scope.cwd !== undefined && scope.cwd !== '') payload.cwd = scope.cwd
-  if (path !== undefined) payload.path = path
-  const resp = await fetch('/sidebar/api/fs.tree', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!resp.ok) throw new Error(`fs.tree ${path ?? '(root)'}: ${resp.status}`)
-  const parsed = await resp.json() as { ok?: boolean; value?: { entries: FsEntry[] }; error?: { message: string } }
-  if (!parsed.ok || parsed.value === undefined) {
-    throw new Error(`fs.tree ${path ?? '(root)'}: ${parsed.error?.message ?? 'unknown error'}`)
-  }
-  return parsed.value.entries.filter((e) => e.isDir && !e.hidden)
-}
+// Shared directory listing (starter fs-dirs host route) and entry type.
+import { fsTree, type FsEntry } from './DirChooser.tsx'
 
 /** Recursive tree node: loads its own children on expand. */
 function TreeNode(props: {
@@ -112,7 +84,11 @@ function DirTreePicker(props: { scope: SessionScope; value: string; onSelect: (p
     if (!expanded && children === null) {
       setLoading(true)
       setError(null)
-      fsTree(scope)
+      const root = scope.cwd ?? ''
+      const listing = root === ''
+        ? Promise.reject(new Error('fs-dirs: 会话工作目录不可用'))
+        : fsTree(scope, root)
+      listing
         .then((dirs) => { setChildren(dirs); setLoading(false) })
         .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false) })
     }

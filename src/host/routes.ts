@@ -29,6 +29,7 @@ export const STARTER_API = {
   detectEnv: '/api/dsh-better-sidebar-starter/detect-env',
   locateSource: '/api/dsh-better-sidebar-starter/locate-source',
   logsHistory: '/api/dsh-better-sidebar-starter/logs-history',
+  fsDirs: '/api/dsh-better-sidebar-starter/fs-dirs',
 }
 /** Cap on JSON request bodies. */
 const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
@@ -318,6 +319,63 @@ export function makeRoutes(deps: StarterRoutesDeps): { routes: WebRoute[]; upgra
         }
         const stopped = kernels.stop(body.instanceId)
         writeJson(res, 200, { ok: true, stopped })
+      },
+    },
+    // --------------------------------------------------- fs-dirs POST
+    // Directory-only listing for the runtime-path browsers (settings panel +
+    // config editor). The sidebar fs.tree API is workspace-confined since
+    // dsh-better-sidebar 0.16 (absolute paths outside the session workspace
+    // get 403), but runtime toolchains (JDK/Maven/Node/Python) legitimately
+    // live outside it — hence this plugin-owned endpoint. Gated by the same
+    // browser-trust fence as every starter route; lists visible child
+    // directory NAMES only and never serves file contents.
+    {
+      kind: 'exact',
+      path: STARTER_API.fsDirs,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const raw = typeof body?.path === 'string' ? body.path.trim() : ''
+        if (raw === '') {
+          writeJson(res, 400, { error: 'path is required' })
+          return
+        }
+        const { isAbsolute, join } = await import('node:path')
+        if (!isAbsolute(raw)) {
+          writeJson(res, 400, { error: 'path must be absolute' })
+          return
+        }
+        // A bare drive ("C:") resolves against that drive's current
+        // directory — normalize it to the drive root.
+        const target = /^[a-zA-Z]:$/.test(raw) ? `${raw}\\` : raw
+        const { readdir, stat } = await import('node:fs/promises')
+        try {
+          const dirents = await readdir(target, { withFileTypes: true })
+          const entries: Array<{ name: string; path: string; isDir: boolean; hidden: boolean; isSymlink: boolean }> = []
+          for (const d of dirents) {
+            let isDir = d.isDirectory()
+            const isLink = d.isSymbolicLink()
+            if (!isDir && isLink) {
+              // A symlink counts only when it resolves to a directory.
+              try { isDir = (await stat(join(target, d.name))).isDirectory() } catch { continue }
+            }
+            if (!isDir) continue
+            entries.push({
+              name: d.name,
+              path: join(target, d.name),
+              isDir: true,
+              hidden: d.name.startsWith('.'),
+              isSymlink: isLink,
+            })
+          }
+          entries.sort((a, b) => a.name.localeCompare(b.name))
+          writeJson(res, 200, { entries })
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException | null)?.code
+          const status = code === 'ENOENT' ? 404 : code === 'EACCES' || code === 'EPERM' ? 403 : 500
+          const message = error instanceof Error ? error.message : String(error)
+          writeJson(res, status, { error: `cannot list "${target}": ${message}` })
+        }
       },
     },
     // --------------------------------------------------- detect-env GET

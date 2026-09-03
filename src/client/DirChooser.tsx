@@ -1,9 +1,11 @@
 /**
- * Shared directory chooser: a filesystem folder tree (backed by the sidebar
- * fs.tree API, which can list any absolute path) plus a browse button that
- * opens a modal popup. Browsing starts at the user's home directory and can
- * navigate up to any drive/root, so runtime tool paths (JDK/Maven/...) that
- * live outside the workspace can be selected.
+ * Shared directory chooser: a filesystem folder tree (backed by the starter
+ * plugin's own fs-dirs host route) plus a browse button that opens a modal
+ * popup. Browsing starts at the user's home directory and can navigate up to
+ * any drive/root, so runtime tool paths (JDK/Maven/...) that live outside the
+ * workspace can be selected. The sidebar fs.tree API cannot be used here — it
+ * is workspace-confined since dsh-better-sidebar 0.16 (403 outside the
+ * session workspace).
  * @module dsh-better-sidebar-starter/client/DirChooser
  */
 
@@ -11,7 +13,7 @@ import { createElement, useState, useEffect, useRef, type ReactNode } from 'reac
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import { FolderIcon, ChevronRightIcon, ChevronDownIcon, CloseIcon, CheckIcon } from './icons.tsx'
 
-/** One directory entry from the sidebar fs.tree API. */
+/** One directory entry from the starter fs-dirs host route. */
 export interface FsEntry {
   name: string
   path: string
@@ -21,21 +23,18 @@ export interface FsEntry {
   broken: boolean
 }
 
-/** Call the sidebar fs.tree API directly via fetch. Returns directories only. */
+/** Call the starter fs-dirs host route via fetch. Returns directories only. */
 export async function fsTree(scope: SessionScope, path: string): Promise<FsEntry[]> {
-  const payload: Record<string, string> = { sessionId: scope.sessionId, path }
-  if (scope.cwd !== undefined && scope.cwd !== '') payload.cwd = scope.cwd
-  const resp = await fetch('/sidebar/api/fs.tree', {
+  const resp = await fetch('/api/dsh-better-sidebar-starter/fs-dirs', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ sessionId: scope.sessionId, path }),
   })
-  if (!resp.ok) throw new Error(`fs.tree ${path}: ${resp.status}`)
-  const parsed = await resp.json() as { ok?: boolean; value?: { entries: FsEntry[] }; error?: { message: string } }
-  if (!parsed.ok || parsed.value === undefined) {
-    throw new Error(`fs.tree ${path}: ${parsed.error?.message ?? 'unknown error'}`)
+  const parsed = await resp.json().catch(() => undefined) as { entries?: FsEntry[]; error?: string } | undefined
+  if (!resp.ok) {
+    throw new Error(`fs-dirs ${path}: ${parsed?.error ?? resp.status}`)
   }
-  return parsed.value.entries.filter((e) => e.isDir && !e.hidden)
+  return (parsed?.entries ?? []).filter((e) => e.isDir && !e.hidden)
 }
 
 /** Fetch the user's home directory from the host. Falls back to cwd. */
