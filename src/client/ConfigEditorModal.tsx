@@ -29,7 +29,7 @@ function TreeNode(props: {
     if (!expanded && children === null) {
       setLoading(true)
       fsTree(scope, entry.path)
-        .then((dirs) => { setChildren(dirs); setLoading(false) })
+        .then((dirs) => { setChildren(dirs.filter((d) => !d.hidden)); setLoading(false) })
         .catch(() => { setChildren([]); setLoading(false) })
     }
     setExpanded(!expanded)
@@ -89,7 +89,7 @@ function DirTreePicker(props: { scope: SessionScope; value: string; onSelect: (p
         ? Promise.reject(new Error('fs-dirs: 会话工作目录不可用'))
         : fsTree(scope, root)
       listing
-        .then((dirs) => { setChildren(dirs); setLoading(false) })
+        .then((dirs) => { setChildren(dirs.filter((d) => !d.hidden)); setLoading(false) })
         .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false) })
     }
     setExpanded(!expanded)

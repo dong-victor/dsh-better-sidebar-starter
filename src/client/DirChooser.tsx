@@ -11,7 +11,7 @@
 
 import { createElement, useState, useEffect, useRef, type ReactNode } from 'react'
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
-import { FolderIcon, ChevronRightIcon, ChevronDownIcon, CloseIcon, CheckIcon } from './icons.tsx'
+import { FolderIcon, ChevronRightIcon, ChevronDownIcon, CloseIcon, CheckIcon, EyeIcon, EyeOffIcon } from './icons.tsx'
 
 /** One directory entry from the starter fs-dirs host route. */
 export interface FsEntry {
@@ -23,7 +23,9 @@ export interface FsEntry {
   broken: boolean
 }
 
-/** Call the starter fs-dirs host route via fetch. Returns directories only. */
+/** Call the starter fs-dirs host route via fetch. Returns directories only,
+ *  INCLUDING hidden ones (flagged via `hidden`) — visibility is decided at
+ *  render time so the show-hidden toggle works without refetching. */
 export async function fsTree(scope: SessionScope, path: string): Promise<FsEntry[]> {
   const resp = await fetch('/api/dsh-better-sidebar-starter/fs-dirs', {
     method: 'POST',
@@ -34,7 +36,12 @@ export async function fsTree(scope: SessionScope, path: string): Promise<FsEntry
   if (!resp.ok) {
     throw new Error(`fs-dirs ${path}: ${parsed?.error ?? resp.status}`)
   }
-  return (parsed?.entries ?? []).filter((e) => e.isDir && !e.hidden)
+  return (parsed?.entries ?? []).filter((e) => e.isDir)
+}
+
+/** Render-time hidden-entry filter shared by the tree components. */
+export function visibleDirs(entries: FsEntry[], showHidden: boolean): FsEntry[] {
+  return showHidden ? entries : entries.filter((e) => !e.hidden)
 }
 
 /** Fetch the user's home directory from the host. Falls back to cwd. */
@@ -69,6 +76,7 @@ export function DirTree(props: {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [showHidden, setShowHidden] = useState(false) // reveal dot/hidden dirs
 
   // Stash scope in a ref so the init effect only runs once regardless of the
   // parent re-rendering with a fresh scope object each frame.
@@ -154,6 +162,14 @@ export function DirTree(props: {
         onClick: () => loadDir(scopeRef.current, cur), // refresh current dir
         title: '\u5237\u65b0',
       }, '\u21bb'),
+      createElement('button', {
+        className: 'sts-dirtree-home',
+        onClick: () => setShowHidden(!showHidden),
+        title: showHidden ? '\u9690\u85cf\u9690\u85cf\u76ee\u5f55' : '\u663e\u793a\u9690\u85cf\u76ee\u5f55',
+        style: showHidden
+          ? { color: '#61afef', opacity: 1 }
+          : { opacity: 0.6 },
+      }, createElement(showHidden ? EyeIcon : EyeOffIcon, { size: 13 })),
       createElement('span', { className: 'sts-dirtree-cur', title: cur }, cur || '(.)'),
     ),
     // Current directory selection row + subdir tree
@@ -172,15 +188,16 @@ export function DirTree(props: {
       ? createElement('div', { className: 'sts-tree-loading', style: { paddingLeft: '16px' } }, '\u52a0\u8f7d\u4e2d...')
       : error !== null
         ? createElement('div', { className: 'sts-tree-error', style: { paddingLeft: '16px' } }, error)
-        : entries !== null && entries.length > 0
+        : entries !== null && visibleDirs(entries, showHidden).length > 0
           ? createElement('div', { className: 'sts-dirtree-sub' },
-              ...entries.map((entry) => createElement(DirRow, {
+              ...visibleDirs(entries, showHidden).map((entry) => createElement(DirRow, {
                 key: entry.path,
                 scope,
                 entry,
                 depth: 1,
                 selectedPath,
                 expanded,
+                showHidden,
                 onToggleExpand: toggleExpand,
                 onPick,
                 onNavigate: navigateInto,
@@ -197,11 +214,12 @@ function DirRow(props: {
   depth: number
   selectedPath: string
   expanded: Set<string>
+  showHidden: boolean
   onToggleExpand: (p: string) => void
   onPick: (p: string) => void
   onNavigate: (p: string) => void
 }): ReactNode {
-  const { scope, entry, depth, selectedPath, expanded, onToggleExpand, onPick, onNavigate } = props
+  const { scope, entry, depth, selectedPath, expanded, showHidden, onToggleExpand, onPick, onNavigate } = props
   const [children, setChildren] = useState<FsEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
   const isExpanded = expanded.has(entry.path)
@@ -241,9 +259,9 @@ function DirRow(props: {
     isExpanded
       ? loading
         ? createElement('div', { className: 'sts-tree-loading', style: { paddingLeft: `${(depth + 1) * 16 + 8}px` } }, '\u52a0\u8f7d\u4e2d...')
-        : children !== null && children.length > 0
+        : children !== null && visibleDirs(children, showHidden).length > 0
           ? createElement('div', null,
-              ...children.map((child) =>
+              ...visibleDirs(children, showHidden).map((child) =>
                 createElement(DirRow, {
                   key: child.path,
                   scope,
@@ -251,6 +269,7 @@ function DirRow(props: {
                   depth: depth + 1,
                   selectedPath,
                   expanded,
+                  showHidden,
                   onToggleExpand: onToggleExpand,
                   onPick,
                   onNavigate: props.onNavigate,
