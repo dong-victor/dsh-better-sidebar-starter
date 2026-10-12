@@ -1,6 +1,6 @@
 {
   "name": "@dong-victor/dsh-better-sidebar-starter",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "dsh-better-sidebar 的运行配置插件：模仿 IntelliJ IDEA 运行/调试配置，支持 npm/springboot/python/custom 命令执行、历史保存、快捷启动、实时日志查看，单 Tab 内分栏布局（左配置树 + 右日志流）",
   "type": "module",
   "engines": {
@@ -19,15 +19,14 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime"
-      ],
+      "inject": [],
       "platform": "web"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
     "cordis": "^4.0.0-rc.7",
     "dsh-better-sidebar": "^0.12.0",
     "react": "^18.2.0",
@@ -43,8 +42,9 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
     "@types/node": "^24.0.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.1",
