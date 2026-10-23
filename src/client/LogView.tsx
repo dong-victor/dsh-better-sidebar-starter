@@ -13,7 +13,7 @@ import { parseAnsi, segmentFgColor, segmentBgColor, type AnsiSegment } from './a
 import { highlightLogText, type LogCodeLink } from './logHighlight.ts'
 import { StopIcon, RestartIcon, TrashIcon, SendToChatIcon } from './icons.tsx'
 import { appendToDraft } from './conversationDraft.ts'
-import { showToast } from './utils.ts'
+import { showToast, hostWebSocketUrl } from './utils.ts'
 
 /** API base. */
 const API_BASE = '/api/dsh-better-sidebar-starter'
@@ -299,7 +299,9 @@ export function LogView({ instance, ctx, sessionId, cwd, onStop, onRestart }: Lo
 
   // Connect WebSocket.
   useEffect(() => {
-    const url = `/api/dsh-better-sidebar-starter/logs?instanceId=${encodeURIComponent(instance.id)}`
+    // Absolute ws:/wss: URL — the desktop shell's page origin is the custom
+    // `dsh-app://` scheme, which `new WebSocket` refuses (see hostWebSocketUrl).
+    const url = hostWebSocketUrl(`/api/dsh-better-sidebar-starter/logs?instanceId=${encodeURIComponent(instance.id)}`)
     const ws = new WebSocket(url)
     wsRef.current = ws
 

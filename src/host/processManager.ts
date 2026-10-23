@@ -627,21 +627,43 @@ export class ProcessManager {
         ? `chcp 65001 >nul && ${finalCommand}`
         : finalCommand
       const stdioFd = logFd ?? ('ignore' as const)
-      child = spawn(cmd, {
-        cwd: resolvedCwd,
-        env: buildEnv(config, globalEnv),
-        shell: true,
-        // POSIX: own process group so the tree survives and can be killed.
-        // Windows: NOT detached — detached+shell drops the inherited log-file
-        // handle before the grandchild service starts (verified empirically),
-        // and Windows children already outlive the parent without it.
-        detached: process.platform !== 'win32',
-        windowsHide: false,
-        // stdout/stderr go DIRECTLY to the log file. No pipe to this host:
-        // when the host exits/restarts the service keeps running and keeps
-        // logging; we only tail the file while we are alive.
-        stdio: ['ignore', stdioFd, stdioFd],
-      })
+      // Windows: invoke cmd.exe OURSELVES instead of letting `shell: true` do
+      // it. `shell: true` makes libuv create an extra intermediate process and
+      // apply windowsHide only to that wrapper; the real cmd.exe then still
+      // allocates its own visible console (observed as a conhost spawned with
+      // flag 0x4 and a non-zero MainWindowHandle) when the parent — the
+      // Electron desktop host — owns no console of its own. The web host runs
+      // under a terminal, inherits its console, and so never showed a window.
+      // Passing cmd.exe explicitly keeps windowsHide on the concrete process,
+      // which suppresses the console for real. `shell: false` here is NOT a
+      // behaviour change: /d /s /c is exactly the command line `shell: true`
+      // produced, so chcp, `&&`, quoting and PATH resolution all still apply.
+      const isWin = process.platform === 'win32'
+      child = spawn(
+        isWin ? (process.env.ComSpec ?? 'cmd.exe') : cmd,
+        isWin ? ['/d', '/s', '/c', cmd] : [],
+        {
+          cwd: resolvedCwd,
+          env: buildEnv(config, globalEnv),
+          shell: false,
+          // POSIX: own process group so the tree survives and can be killed.
+          // Windows: NOT detached — detached+shell drops the inherited log-file
+          // handle before the grandchild service starts (verified empirically),
+          // and Windows children already outlive the parent without it.
+          detached: process.platform !== 'win32',
+          // Windows: never let the spawned console show up. With cmd.exe passed
+          // explicitly above this flag reaches the process that would own the
+          // console, so the desktop no longer pops a black window per start.
+          // Do NOT switch to detached:true for hiding: on Windows libuv then
+          // allocates a visible console for the child (MainWindowHandle != 0)
+          // and the grandchild loses the inherited log fd (file stays empty).
+          windowsHide: true,
+          // stdout/stderr go DIRECTLY to the log file. No pipe to this host:
+          // when the host exits/restarts the service keeps running and keeps
+          // logging; we only tail the file while we are alive.
+          stdio: ['ignore', stdioFd, stdioFd],
+        },
+      )
     } catch (error) {
       instance.status = 'error'
       instance.exitCode = -1

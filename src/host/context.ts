@@ -21,9 +21,19 @@ export interface PluginSessionStore {
   get(id: string): { header: PluginSessionHeader } | undefined
 }
 
-/** The web runtime face (`ctx.webRuntime.trustedHosts` — the /api gateway's trust source). */
-export interface PluginWebRuntime {
-  trustedHosts: readonly string[]
+/**
+ * The connection face (`ctx.connection` — the /api gateway's owner, provided
+ * by `@deepseek-ai/dsh-client-connection`). It is this plugin's trust source:
+ * `trustedHosts` is the deployment authority list and `requestRejection` is
+ * the gateway's own Host/Origin fence plus browser authentication. Both
+ * members exist on dsh 0.2.0-rc.2 and 0.2.1-rc.2 — unlike `webRuntime`, which
+ * 0.2.1 removed, so this face keeps the plugin mounting on both runtimes.
+ */
+export interface PluginConnection {
+  /** Non-loopback authorities this deployment serves (may be absent). */
+  trustedHosts?: readonly string[]
+  /** The gateway's own fence: 403/401 when refused, undefined when admitted. */
+  requestRejection?(req: IncomingMessage): number | undefined
 }
 
 /** One named webserver route (mirror of @deepseek-ai/dsh-host-webserver WebRoute). */
@@ -79,10 +89,17 @@ export interface PluginSystemPrompt {
 export interface PluginContext {
   webServer: PluginWebServer
   sessions: PluginSessionStore
-  webRuntime: PluginWebRuntime
   /** Register a lifecycle callback (DSH-vendored cordis): runs at plugin
    *  activation; its returned cleanup runs at disposal. */
   effect(fn: () => void | (() => void), label?: string): void
+  /** The /api gateway (`@deepseek-ai/dsh-client-connection`), i.e. this
+   *  plugin's trust source. NOT listed in `inject`: it is resolved lazily
+   *  through `ctx.get`, so a composition that renames or drops the service
+   *  loses only the gateway-based fence, never the plugin. */
+  connection?: PluginConnection
+  /** cordis' non-throwing service lookup — returns undefined instead of
+   *  throwing for a service this plugin does not inject. */
+  get?(name: string): unknown
   /** Structural `tools` service (may be absent on very old hosts). */
   tools?: PluginToolRuntime
   /** Structural system-prompt service (may be absent on very old hosts). */

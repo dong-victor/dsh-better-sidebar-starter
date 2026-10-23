@@ -9,8 +9,9 @@ import { createElement, useState, useEffect, type ReactNode } from 'react'
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import { CloseIcon, PlusIcon, TrashIcon, ChevronRightIcon, FolderIcon, ClipboardIcon } from './icons.tsx'
 import { PathPicker } from './PathPicker.tsx'
-// Shared directory listing (starter fs-dirs host route) and entry type.
-import { fsTree, type FsEntry } from './DirChooser.tsx'
+// Shared directory listing (starter fs-dirs host route), entry type, and the
+// absolute-path predicate both pickers use.
+import { fsTree, isAbsolutePath, type FsEntry } from './DirChooser.tsx'
 
 /** Recursive tree node: loads its own children on expand. */
 function TreeNode(props: {
@@ -72,7 +73,17 @@ function TreeNode(props: {
   )
 }
 
-/** Directory tree picker: shows a collapsible tree rooted at session cwd. */
+/** The absolute directory this picker can browse: the session workspace when
+ *  the host reported it in absolute form, else null. The starter fs-dirs route
+ *  only accepts absolute paths, so a missing absolute root has to surface as a
+ *  clear message rather than being sent as-is (which used to reach the host as
+ *  a relative path and read back as a bare `fs-dirs .: 404`). */
+function browseRoot(scope: SessionScope): string | null {
+  const cwd = scope.cwd
+  return cwd !== undefined && isAbsolutePath(cwd) ? cwd : null
+}
+
+/** Directory tree picker: shows a collapsible tree rooted at the workspace. */
 function DirTreePicker(props: { scope: SessionScope; value: string; onSelect: (path: string) => void }): ReactNode {
   const { scope, value, onSelect } = props
   const [expanded, setExpanded] = useState(false)
@@ -82,19 +93,23 @@ function DirTreePicker(props: { scope: SessionScope; value: string; onSelect: (p
 
   const handleToggle = (): void => {
     if (!expanded && children === null) {
-      setLoading(true)
       setError(null)
-      const root = scope.cwd ?? ''
-      const listing = root === ''
-        ? Promise.reject(new Error('fs-dirs: 会话工作目录不可用'))
-        : fsTree(scope, root)
-      listing
-        .then((dirs) => { setChildren(dirs.filter((d) => !d.hidden)); setLoading(false) })
-        .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false) })
+      const root = browseRoot(scope)
+      if (root === null) {
+        setError('fs-dirs: 无法确定工作目录（会话未提供绝对路径），请在下方直接填写绝对路径')
+      } else {
+        setLoading(true)
+        fsTree(scope, root)
+          .then((dirs) => { setChildren(dirs.filter((d) => !d.hidden)); setLoading(false) })
+          .catch((err) => { setError(err instanceof Error ? err.message : String(err)); setLoading(false) })
+      }
     }
     setExpanded(!expanded)
   }
 
+  // An empty or relative cwd means "the workspace root" — that is the value the
+  // host resolves against the session workspace, so it stays selectable; it is
+  // just never sent to fs-dirs (see browseRoot above).
   const rootSelected = value === '.' || value === '' || value === './'
 
   return createElement('div', { className: 'sts-tree-picker' },

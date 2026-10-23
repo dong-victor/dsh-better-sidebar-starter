@@ -7,9 +7,14 @@
 import { createElement, useState, useEffect, type ReactNode } from 'react'
 import type { SidebarSettingsRenderProps, SessionScope } from 'dsh-better-sidebar/client/service'
 import { PathPicker } from './PathPicker.tsx'
+import { injectStyles } from './injectStyles.ts'
 
 /** The custom settings panel rendered in the gear popup. */
 export function SettingsPanel(props: SidebarSettingsRenderProps): ReactNode {
+  // The gear popup can open before the "服务" tab ever mounts, so the panel
+  // installs the stylesheet itself instead of relying on the tab's render.
+  injectStyles()
+
   const { store, pluginSettings, updatePluginSetting } = props
   const scope: SessionScope = { sessionId: store.getSnapshot().sessionId ?? '' }
 

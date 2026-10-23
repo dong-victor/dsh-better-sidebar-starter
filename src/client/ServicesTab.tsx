@@ -13,7 +13,7 @@ import { LogView } from './LogView.tsx'
 import { LogHistoryView } from './LogHistoryView.tsx'
 import { ConfigEditorModal, type ConfigEditorModalProps } from './ConfigEditorModal.tsx'
 import { RocketIcon, PlusIcon } from './icons.tsx'
-import { STYLES_CSS } from './styles.ts'
+import { injectStyles } from './injectStyles.ts'
 
 /** API base. */
 const API_BASE = '/api/dsh-better-sidebar-starter'
@@ -21,20 +21,11 @@ const API_BASE = '/api/dsh-better-sidebar-starter'
 /** Instance poll interval (ms). */
 const POLL_INTERVAL = 3000
 
-/** Inject styles once. */
-let STYLES_INJECTED = false
-function injectStyles(): void {
-  if (STYLES_INJECTED) return
-  STYLES_INJECTED = true
-  const tag = document.createElement('style')
-  tag.id = 'dsh-better-sidebar-starter-styles'
-  tag.setAttribute('data-plugin', '@dong-victor/dsh-better-sidebar-starter')
-  tag.textContent = STYLES_CSS
-  document.head.appendChild(tag)
-}
-
 /** The main services tab component. */
 export function ServicesTab(props: TabComponentProps): ReactNode {
+  // Defensive re-injection: the plugin's apply() already installs the
+  // stylesheet, but the tab must stay styled even if it is mounted through a
+  // path that skipped apply().
   injectStyles()
 
   const { scope, store } = props
