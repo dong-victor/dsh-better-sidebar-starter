@@ -627,6 +627,10 @@ export class ProcessManager {
         ? `chcp 65001 >nul && ${finalCommand}`
         : finalCommand
       const stdioFd = logFd ?? ('ignore' as const)
+      // `cmd` above is a SHELL command line (config.command + config.args, e.g.
+      // "npm run dev -- --host 0.0.0.0"), so it must go through a shell on BOTH
+      // platforms.
+      //
       // Windows: invoke cmd.exe OURSELVES instead of letting `shell: true` do
       // it. `shell: true` makes libuv create an extra intermediate process and
       // apply windowsHide only to that wrapper; the real cmd.exe then still
@@ -635,13 +639,22 @@ export class ProcessManager {
       // Electron desktop host — owns no console of its own. The web host runs
       // under a terminal, inherits its console, and so never showed a window.
       // Passing cmd.exe explicitly keeps windowsHide on the concrete process,
-      // which suppresses the console for real. `shell: false` here is NOT a
-      // behaviour change: /d /s /c is exactly the command line `shell: true`
-      // produced, so chcp, `&&`, quoting and PATH resolution all still apply.
+      // which suppresses the console for real. /d /s /c is exactly the command
+      // line `shell: true` produced, so chcp, `&&`, quoting and PATH resolution
+      // all still apply.
+      //
+      // POSIX: pass the command string to `/bin/sh -c` — the documented
+      // behaviour of `shell: true` there. This used to be `spawn(cmd, [], {
+      // shell: false })`, i.e. the whole multi-word string was argv[0], so the
+      // kernel hunted for a binary literally named "npm run dev" and EVERY
+      // command containing a space failed with `spawn npm run dev ENOENT` —
+      // with or without args. `shell: false` stays literal: we apply the shell
+      // semantics ourselves, so libuv inserts no extra wrapper and `detached`
+      // keeps putting the shim in its own process group.
       const isWin = process.platform === 'win32'
       child = spawn(
-        isWin ? (process.env.ComSpec ?? 'cmd.exe') : cmd,
-        isWin ? ['/d', '/s', '/c', cmd] : [],
+        isWin ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh',
+        isWin ? ['/d', '/s', '/c', cmd] : ['-c', cmd],
         {
           cwd: resolvedCwd,
           env: buildEnv(config, globalEnv),

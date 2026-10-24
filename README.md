@@ -9,6 +9,8 @@ dsh-better-sidebar 的运行配置插件：模仿 IntelliJ IDEA 运行/调试配
 - **实时日志**：WebSocket 实时推送 stdout/stderr，ANSI 彩色渲染
 - **IDEA 服务面板式布局**：左侧 1/3 配置树（按类型分组）+ 右侧 2/3 日志流
 - **进程管理**：跨平台进程树杀死（Windows taskkill /T，Unix process group kill）
+- **跨平台命令解析**：命令串在两端都交给系统 shell（Windows `cmd.exe /d /s /c`，
+  POSIX `/bin/sh -c`），因此 `npm run dev -- --host 0.0.0.0` 这类带空格的命令可用
 
 ## 配置类型
 
