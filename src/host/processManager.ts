@@ -438,23 +438,49 @@ function pidAlive(pid: number): boolean {
 }
 
 /** All descendant pids of `rootPid` (BFS over the parent→children relation),
- *  shallowest first. Uses one PowerShell process-table snapshot; on any
- *  failure returns [] — callers must treat it as "unknown", not "empty". */
+ *  shallowest first. Uses one process-table snapshot; on any failure returns []
+ *  — callers must treat it as "unknown", not "empty".
+ *
+ *  Windows: one PowerShell/CIM snapshot. POSIX: `ps -A -o pid=,ppid=`, which
+ *  exists on both Linux and macOS (BSD and procps agree on those flags).
+ *  This used to be PowerShell-only, so on POSIX the snapshot always threw and
+ *  the catch turned it into `[]` — read by every caller as "there are no
+ *  descendants". Consequences were real: `handleWrapperExit` declared the run
+ *  finished while the service was still alive (leaving an orphan holding its
+ *  port), `startPidPoll` could never promote a survivor, and `adoptOrphans`
+ *  found nothing after a host restart because `descendants` was always empty. */
 async function walkChildren(rootPid: number): Promise<number[]> {
   if (!Number.isInteger(rootPid) || rootPid <= 0) return []
   try {
     const { execFile } = await import('node:child_process')
-    const stdout = await new Promise<string>((resolve, reject) => {
-      execFile('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress -Depth 2',
-      ], { windowsHide: true, timeout: 15000, maxBuffer: 16 * 1024 * 1024 }, (err, out) => {
-        if (err !== null) reject(err)
-        else resolve(out)
+    const rows: Array<{ ProcessId: number; ParentProcessId: number }> = []
+    if (process.platform === 'win32') {
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress -Depth 2',
+        ], { windowsHide: true, timeout: 15000, maxBuffer: 16 * 1024 * 1024 }, (err, out) => {
+          if (err !== null) reject(err)
+          else resolve(out)
+        })
       })
-    })
-    const parsed = JSON.parse(stdout) as Array<{ ProcessId: number; ParentProcessId: number }> | { ProcessId: number; ParentProcessId: number }
-    const rows = Array.isArray(parsed) ? parsed : [parsed]
+      const parsed = JSON.parse(stdout) as Array<{ ProcessId: number; ParentProcessId: number }> | { ProcessId: number; ParentProcessId: number }
+      for (const r of Array.isArray(parsed) ? parsed : [parsed]) rows.push(r)
+    } else {
+      // One row per process: "<pid><spaces><ppid>" (the `=` suffix on both
+      // column names suppresses headers and column titles).
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile('ps', ['-A', '-o', 'pid=,ppid='], { timeout: 15000, maxBuffer: 16 * 1024 * 1024 }, (err, out) => {
+          if (err !== null) reject(err)
+          else resolve(out)
+        })
+      })
+      for (const line of stdout.split('\n')) {
+        const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+        if (match === null) continue
+        rows.push({ ProcessId: Number(match[1]), ParentProcessId: Number(match[2]) })
+      }
+    }
     const byParent = new Map<number, number[]>()
     for (const r of rows) {
       if (typeof r.ProcessId !== 'number' || typeof r.ParentProcessId !== 'number') continue

@@ -40,7 +40,18 @@ export async function fsTree(scope: SessionScope, path: string): Promise<FsEntry
   })
   const parsed = await resp.json().catch(() => undefined) as { entries?: FsEntry[]; error?: string } | undefined
   if (!resp.ok) {
-    throw new Error(`fs-dirs ${path}: ${parsed?.error ?? resp.status}`)
+    // Our host handler answers every failure with an `error` string. A body
+    // without one means something upstream answered instead — the route is not
+    // registered (plugin inactive or not loaded), which used to surface as a
+    // bare, unactionable `fs-dirs <path>: 404`.
+    if (parsed?.error === undefined) {
+      throw new Error(
+        `fs-dirs: 插件的 host 路由未注册（HTTP ${resp.status}）。` +
+        '说明 dsh 加载时该插件未激活或加载失败，请查看 dsh 启动日志中是否出现 ' +
+        '"[starter] host routes mounted"，并重启 dsh 后重试。',
+      )
+    }
+    throw new Error(`fs-dirs ${path}: ${parsed.error}`)
   }
   return (parsed?.entries ?? []).filter((e) => e.isDir)
 }

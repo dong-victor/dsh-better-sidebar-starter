@@ -60,6 +60,12 @@ export function apply(ctx: PluginContext): void {
     const { routes, upgrade } = makeRoutes({ ctx, kernels, fence })
     const disposers = routes.map(route => ctx.webServer.register(route))
     disposers.push(ctx.webServer.registerUpgrade(upgrade))
+    // Self-proof for the "everything 404s" class of report: a bare numeric
+    // 404 in the panel (no `error` field) means the route was never
+    // registered, and the only way to tell that apart from a genuinely
+    // missing directory is this line. If a future runtime drops one of the
+    // injected services the plugin stays inactive and this never prints.
+    console.log(`[starter] host routes mounted (${routes.length})`)
     return () => {
       for (const dispose of disposers) {
         try { dispose() } catch { /* already disposed */ }

@@ -11,6 +11,9 @@ dsh-better-sidebar 的运行配置插件：模仿 IntelliJ IDEA 运行/调试配
 - **进程管理**：跨平台进程树杀死（Windows taskkill /T，Unix process group kill）
 - **跨平台命令解析**：命令串在两端都交给系统 shell（Windows `cmd.exe /d /s /c`，
   POSIX `/bin/sh -c`），因此 `npm run dev -- --host 0.0.0.0` 这类带空格的命令可用
+- **跨平台进程树遍历**：Windows 用 PowerShell/CIM 快照，POSIX 用 `ps -A -o pid=,ppid=`；
+  同一套 BFS 同时服务于「外壳退出后判断后代存活」「存活后代提升」「重启后接管上次的服务」。
+  （此前只有 PowerShell 一条路径，POSIX 下恒返回空集，导致孤儿判定失败、重启后无法接管）
 
 ## 配置类型
 
@@ -69,6 +72,16 @@ Host 端的 `inject` 只用各版本都存在的服务：`webServer`、`sessions
   配置编辑弹窗里的目录树同理——会话 cwd 不是绝对路径时给出提示并让用户直接
   填绝对路径；那里的「工作空间根目录」行仍保留 `'.'` 这一**语义值**（host 起服务
   时会把它解析成会话工作区），只是这个值不会传给 `fs-dirs`。
+- **`inject` 不能靠 `ctx.get` 减项**：cordis 里读一个未注入的服务属性会直接抛
+  `cannot get property "<name>" without inject`（不是 `undefined`），所以
+  `agentTools` 里 `ctx.tools === undefined` 这类可选保护的成立前提，恰恰是
+  `tools` / `systemPrompt` **仍在 `inject` 中**。把 `inject` 收窄到「路由必需」
+  会让这两处从「可选」变成「抛错」。
+- **挂载自证**：`apply()` 成功注册路由后打印
+  `[starter] host routes mounted (8)`。排查「面板全 404」时先看日志里有没有这一行：
+  有 = 路由已挂载（404 来自路径或权限），没有 = 插件未激活/未加载。
+  client 端据此区分——响应体没有 `error` 字段时提示「host 路由未注册」，
+  而不是甩一个裸 `404`。
 
 ## 架构
 
