@@ -12,6 +12,7 @@ import { PathPicker } from './PathPicker.tsx'
 // Shared directory listing (starter fs-dirs host route), entry type, and the
 // absolute-path predicate both pickers use.
 import { fsTree, isAbsolutePath, type FsEntry } from './DirChooser.tsx'
+import { useBackdropDismiss } from './useBackdropDismiss.ts'
 
 /** Recursive tree node: loads its own children on expand. */
 function TreeNode(props: {
@@ -289,9 +290,14 @@ export function ConfigEditorModal({ config, scope, onSave, onCancel }: ConfigEdi
 
   const isSpringboot = type === 'springboot'
 
+  // Backdrop click closes only for a genuine press-and-release on the overlay
+  // itself; drag-selecting text in a field used to dismiss the dialog and
+  // discard the edits. See useBackdropDismiss for the event-order reasoning.
+  const backdrop = useBackdropDismiss(onCancel)
+
   return createElement('div', {
     className: 'sts-modal-overlay',
-    onClick: (e: MouseEvent) => { if (e.target === e.currentTarget) onCancel() },
+    ...backdrop,
   },
     createElement('div', { className: 'sts-modal' },
       // Header

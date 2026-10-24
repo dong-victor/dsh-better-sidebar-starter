@@ -12,6 +12,7 @@
 import { createElement, useState, useEffect, useRef, type ReactNode } from 'react'
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import { FolderIcon, ChevronRightIcon, ChevronDownIcon, CloseIcon, CheckIcon, EyeIcon, EyeOffIcon } from './icons.tsx'
+import { useBackdropDismiss } from './useBackdropDismiss.ts'
 
 /** One directory entry from the starter fs-dirs host route. */
 export interface FsEntry {
@@ -374,10 +375,12 @@ function DirChooserModal(props: {
   // these values straight to the host (spawn cwd / tool lookup), and an empty
   // or `'.'` value previously propagated a relative path.
   const canConfirm = isAbsolutePath(sel)
+  // Same guard as the config editor: a drag-selection must not dismiss.
+  const backdrop = useBackdropDismiss(onCancel)
 
   return createElement('div', {
     className: 'sts-modal-overlay',
-    onClick: (e: MouseEvent) => { if (e.target === e.currentTarget) onCancel() },
+    ...backdrop,
   },
     createElement('div', { className: 'sts-dir-modal' },
       createElement('div', { className: 'sts-modal-header' },
